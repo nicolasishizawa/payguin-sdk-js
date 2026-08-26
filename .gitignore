@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+.env
+# dist/ is committed on purpose: bun does not reliably run `prepare` on git
+# dependencies, so shipping built output guarantees `github:...` installs work.
