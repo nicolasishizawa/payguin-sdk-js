@@ -166,17 +166,14 @@ export interface PayGuinCreateOrderRequest {
     phone: string;
     document: string;
   };
-  /**
-   * Caller-defined reference for correlation.
-   * NOTE: the Go backend does NOT accept this field yet.
-   * Including it is forward-compatible; it will be ignored until
-   * the backend adds support.
-   */
+  /** Caller-defined reference for correlation. Returned in `order.reference`. */
   reference?: string;
   /**
    * Arbitrary key-value metadata attached to the order.
-   * NOTE: the Go backend does NOT accept this field yet.
-   * Same forward-compatibility note as `reference`.
+   *
+   * The Checkout's own metadata is inherited by every Order created on it, and
+   * these keys are merged on top: order keys win, the rest survive. Null becomes
+   * an empty object in the webhook payload, never `null`.
    */
   metadata?: Record<string, unknown>;
 }

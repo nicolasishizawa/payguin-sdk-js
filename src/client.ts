@@ -42,10 +42,8 @@ export class PayGuinClient {
    * Calls POST /api/v1/checkouts/{checkoutId}/orders with payer data.
    * Returns the PIX copia-e-cola string and order metadata.
    *
-   * NOTE: `reference` and `metadata` fields in the input are forward-compatible.
-   * The Go backend does NOT accept them yet. They are included in the request
-   * body but will be ignored until the backend adds support. Correlation today
-   * works via the returned `orderId`.
+   * `reference` and `metadata` are accepted end to end: the Go backend persists
+   * them on the Order and echoes them back in the outbound webhook payload.
    *
    * @throws {PayGuinApiError} On non-2xx HTTP responses.
    * @throws {Error} On network failures or timeouts.
@@ -67,7 +65,7 @@ export class PayGuinClient {
       },
     };
 
-    // Forward-compatible fields (pending backend support)
+    // Omitted when undefined so the backend keeps the Checkout defaults.
     if (input.reference !== undefined) {
       payload.reference = input.reference;
     }
