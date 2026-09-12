@@ -18,12 +18,12 @@ It's a git dependency, pinned to a tag — no registry, no surprises:
 // package.json
 {
   "dependencies": {
-    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.1.0"
+    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.2.0"
   }
 }
 ```
 
-Then `bun install` (or `npm install`). Bump the `#v0.1.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
+Then `bun install` (or `npm install`). Bump the `#v0.2.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
 
 ---
 
@@ -94,11 +94,16 @@ const charge = await client.createCharge("checkout-uuid", {
   payer: { name, email, phone, document },
   reference: "order-42",              // your correlation id (optional)
   metadata: { plan: "pro", userId },  // free-form, echoed back on the webhook (optional)
+  session,                            // signed checkout session (optional, see below)
+  bumpCheckoutIds: ["extra-uuid"],    // extras the buyer ticked; needs a session (optional)
 });
-// → { orderId, externalId, status, amountCents, currency, pixCopiaECola, pixExpiresAt }
+// → { orderId, externalId, reference, status, amountCents, currency,
+//     pixCopiaECola, pixExpiresAt, items: [{ checkoutId, name, amountCents }] }
 ```
 
 `reference` and `metadata` ride along to the outbound webhook, so you can tie a payment straight back to whatever it means in your system. (No reference? The returned `orderId` works just as well as a key.)
+
+With a `session`, the extras in `bumpCheckoutIds` must be among the ones the session offers; PayGuin sums the prices server-side (`amountCents` is the total) and the `reference` comes from the signed token, never from the request. `items` lists every line charged, main checkout included (empty on servers that predate order bump).
 
 ### `getOrderStatus(orderId)`
 
@@ -106,12 +111,48 @@ Your safety net when a webhook gets lost in the ether. Poll the truth directly:
 
 ```ts
 const status = await client.getOrderStatus("order-uuid");
-// → { status: "pending" | "paid" | "canceled" | "failed" | "expired", amountCents, currency, expiresAt }
+// → { status: "pending" | "paid" | "canceled" | "failed" | "expired", amountCents, currency, expiresAt, reference }
+```
+
+Got an order id from a browser? Check `reference` matches the purchase you expect before acting on it.
+
+### `getCheckoutSummary(checkoutId)`
+
+The price that is configured in PayGuin *right now* — change it in the desktop app and your catalog follows, no deploy:
+
+```ts
+const summary = await client.getCheckoutSummary("checkout-uuid");
+// → { id, name, amountCents, currency, isActive }
 ```
 
 ### When things go wrong: `PayGuinApiError`
 
 Any non-2xx response throws a `PayGuinApiError` carrying `httpStatus`, `errorCode`, `errorMessage`, and the raw `responseBody` — enough to actually debug, never a silent failure.
+
+---
+
+## Checkout session (embedded checkout with order bump)
+
+When your app embeds the PayGuin checkout page (a modal with an iframe), your **backend** signs a short-lived session saying what may be sold: the main checkout, the extras offered as order bump, your purchase reference, and the payer data to pre-fill. PayGuin takes the reference and the extras **only** from this signed token — never from the browser — so nobody can hang a purchase on someone else's account or invent an extra.
+
+```ts
+import { createCheckoutSession } from "@payguin/sdk";
+
+const session = createCheckoutSession(
+  {
+    v: 1,
+    checkout_id: "main-checkout-uuid",
+    bump_checkout_ids: ["extra-1-uuid", "extra-2-uuid"], // extras OFFERED; the buyer picks
+    reference: purchase.id,                               // comes back as order.reference
+    payer: { name: user.name, email: user.email },        // phone/document optional
+    exp: Math.floor(Date.now() / 1000) + 30 * 60,         // unix SECONDS — keep it short
+  },
+  process.env.PAYGUIN_WEBHOOK_SECRET!, // the project's signing secret, same one as the webhooks
+);
+// Hand it to the iframe via postMessage after its "ready" event. Never put it in a URL.
+```
+
+Under the hood: `base64url(payloadJSON) + "." + base64url(HMAC-SHA256(key, base64url(payloadJSON)))`, with `key = HMAC-SHA256(secret, "payguin-checkout-session-v1")` — a key derived for this purpose, so a session signature can never pass as a webhook signature. base64url has no padding. A payload outside the contract (missing field, `exp` in milliseconds, empty secret) throws a `TypeError` right away instead of minting a token PayGuin will refuse.
 
 ---
 
@@ -198,6 +239,8 @@ Every event is a member of a discriminated union keyed on `event`, so TypeScript
 | `payout.*` | Payout (cash-out) lifecycle events |
 
 Each one carries `order`, `checkout`, `payer`, `metadata`, `timestamp`, and `idempotencyKey`. Heads up: PayGuin normalizes a provider `refunded` status into `payment.failed` / `payment.canceled`.
+
+`order.reference` is your correlation id (the session's `reference`, or `""` when none). `order.items` lists every paid line — the main checkout plus any order-bump extras — as `{ checkout_id, name, amount_cents }`, and `order.amount_cents` is their sum. Grant access **per item**, keyed on `checkout_id`. Servers older than order bump don't send `items`; treat that as "only `checkout`".
 
 ---
 

@@ -42,14 +42,33 @@ export interface PayGuinWebhookPayload {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * One paid line of an order, as PayGuin sends it (wire names).
+ * The main Checkout is always one of the items; order-bump extras are the rest.
+ */
+export interface PayGuinOrderItem {
+  checkout_id: string; // UUID
+  name: string;
+  /** Price of this Checkout at order time, integer cents. */
+  amount_cents: number;
+}
+
 export interface PayGuinOrder {
   id: string; // UUID
   external_id: string;
+  /** Your correlation id (from the checkout session or `createCharge`). Empty string when none. */
+  reference: string;
   status: string; // "pending" | "paid" | "failed" | "canceled" | "expired"
+  /** Total charged: sum of `items`, computed by PayGuin. */
   amount_cents: number;
   currency: string; // "BRL"
   paid_at: string | null;
   created_at: string; // ISO 8601
+  /**
+   * Every line of the order, main Checkout included. Absent on servers older
+   * than the order-bump release; treat absent as "only `checkout`".
+   */
+  items?: PayGuinOrderItem[];
 }
 
 export interface PayGuinCheckout {
@@ -176,31 +195,70 @@ export interface PayGuinCreateOrderRequest {
    * an empty object in the webhook payload, never `null`.
    */
   metadata?: Record<string, unknown>;
+  /** Signed checkout session (see `createCheckoutSession`). */
+  session?: string;
+  /** Extras the buyer chose; must be a subset of the session's `bump_checkout_ids`. */
+  bump_checkout_ids?: string[];
 }
 
 /** Response from PayGuin: POST /api/v1/checkouts/{checkoutId}/orders */
 export interface PayGuinCreateOrderResponse {
   order_id: string;
   external_id: string;
+  /** Omitted by the server when the order has no reference. */
+  reference?: string;
   status: string;
   amount_cents: number;
   currency: string;
   pix_copia_e_cola: string;
   pix_expires_at: string | null;
+  /** Every line charged, main Checkout included. Absent on servers before order bump. */
+  items?: PayGuinOrderItem[];
+}
+
+/** Response from PayGuin: GET /api/v1/orders/{orderId}/status */
+export interface PayGuinOrderStatusResponse {
+  status: OrderStatus["status"];
+  amount_cents: number;
+  currency: string;
+  expires_at?: string | null;
+  /** Not personal data: lets the project check whose order this is. */
+  reference?: string;
+}
+
+/** Response from PayGuin: GET /api/v1/checkouts/{checkoutId}/summary */
+export interface PayGuinCheckoutSummaryResponse {
+  id: string;
+  name: string;
+  amount_cents: number;
+  currency: string;
+  is_active: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // SDK return types (camelCase, consumer-friendly)
 // ---------------------------------------------------------------------------
 
+/** One line of an order (camelCase view of {@link PayGuinOrderItem}). */
+export interface OrderItem {
+  checkoutId: string;
+  name: string;
+  amountCents: number;
+}
+
 export interface ChargeResult {
   orderId: string;
   externalId: string;
+  /** Reference stored on the order (from the session when one was sent); null when none. */
+  reference: string | null;
   status: string;
+  /** Total: main Checkout + chosen extras, computed by PayGuin. */
   amountCents: number;
   currency: string;
   pixCopiaECola: string;
   pixExpiresAt: string | null;
+  /** Lines charged, main Checkout included. Empty when the server does not report items. */
+  items: OrderItem[];
 }
 
 export interface OrderStatus {
@@ -208,6 +266,17 @@ export interface OrderStatus {
   amountCents: number;
   currency: string;
   expiresAt: string | null;
+  /** Reference stored on the order; null when none. */
+  reference: string | null;
+}
+
+/** Public summary of a Checkout — current price and whether it can be sold. */
+export interface CheckoutSummary {
+  id: string;
+  name: string;
+  amountCents: number;
+  currency: string;
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,15 +294,60 @@ export interface PayerInput {
 export interface CreateChargeInput {
   payer: PayerInput;
   /**
-   * Caller-defined reference for correlation.
-   * NOTE: requires a pending PayGuin backend change to take effect.
+   * Caller-defined reference for correlation. Persisted on the Order and
+   * echoed back as `order.reference` in the webhook.
+   *
+   * With a `session`, the reference inside the signed token is the one that
+   * counts — PayGuin never takes it from the request body in that case.
    */
   reference?: string;
   /**
-   * Arbitrary key-value metadata attached to the order.
-   * NOTE: requires a pending PayGuin backend change to take effect.
+   * Arbitrary key-value metadata attached to the order, merged on top of the
+   * Checkout's own metadata (order keys win) and echoed back in the webhook.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Signed checkout session (see `createCheckoutSession`). Sent as `session`.
+   * Required for order bump: it is what authorizes the extras and the reference.
+   */
+  session?: string;
+  /**
+   * Extras the buyer chose, a subset of the session's `bump_checkout_ids`.
+   * Sent as `bump_checkout_ids`. An empty array means "no extras" explicitly.
+   */
+  bumpCheckoutIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Checkout session (signed token handed to the embedded checkout page)
+// ---------------------------------------------------------------------------
+
+/** Payer data pre-filled on the checkout page. Empty `phone`/`document` are omitted. */
+export interface CheckoutSessionPayer {
+  name: string;
+  email: string;
+  phone?: string;
+  /** CPF or CNPJ. Travels inside the signed token; never log the token. */
+  document?: string;
+}
+
+/**
+ * What the project signs for PayGuin (wire names, snake_case, on purpose: this
+ * is exactly the JSON that gets signed). PayGuin trusts `reference` and the
+ * offered extras ONLY from here, never from the browser.
+ */
+export interface CheckoutSessionPayload {
+  /** Token format version. */
+  v: 1;
+  /** Main Checkout being sold. */
+  checkout_id: string;
+  /** Extras OFFERED on the page (order bump); the buyer picks among them. */
+  bump_checkout_ids: string[];
+  /** Your purchase id. Comes back as `order.reference` on the webhook. */
+  reference: string;
+  payer: CheckoutSessionPayer;
+  /** Expiry in unix SECONDS (not milliseconds). Keep it short, e.g. now + 30 min. */
+  exp: number;
 }
 
 // ---------------------------------------------------------------------------

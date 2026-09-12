@@ -30,6 +30,7 @@ __export(index_exports, {
   PayGuinApiError: () => PayGuinApiError,
   PayGuinClient: () => PayGuinClient,
   PayGuinEventType: () => PayGuinEventType,
+  createCheckoutSession: () => createCheckoutSession,
   handleWebhook: () => handleWebhook,
   parseWebhookEvent: () => parseWebhookEvent,
   verifyWebhookSignature: () => verifyWebhookSignature
@@ -75,10 +76,10 @@ var PayGuinClient = class {
    * Calls POST /api/v1/checkouts/{checkoutId}/orders with payer data.
    * Returns the PIX copia-e-cola string and order metadata.
    *
-   * NOTE: `reference` and `metadata` fields in the input are forward-compatible.
-   * The Go backend does NOT accept them yet. They are included in the request
-   * body but will be ignored until the backend adds support. Correlation today
-   * works via the returned `orderId`.
+   * `reference` and `metadata` are accepted end to end: the Go backend persists
+   * them on the Order and echoes them back in the outbound webhook payload.
+   * With a `session`, the extras in `bumpCheckoutIds` are added to the charge
+   * (PayGuin sums the prices server-side) and the reference comes from the token.
    *
    * @throws {PayGuinApiError} On non-2xx HTTP responses.
    * @throws {Error} On network failures or timeouts.
@@ -101,6 +102,12 @@ var PayGuinClient = class {
     if (input.metadata !== void 0) {
       payload.metadata = input.metadata;
     }
+    if (input.session !== void 0) {
+      payload.session = input.session;
+    }
+    if (input.bumpCheckoutIds !== void 0) {
+      payload.bump_checkout_ids = input.bumpCheckoutIds;
+    }
     const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/orders`;
     const response = await this.doFetch(url, {
       method: "POST",
@@ -114,11 +121,14 @@ var PayGuinClient = class {
     return {
       orderId: data.order_id,
       externalId: data.external_id,
+      // The server omits an empty reference; "" and absent both mean "none".
+      reference: data.reference || null,
       status: data.status,
       amountCents: data.amount_cents,
       currency: data.currency,
       pixCopiaECola: data.pix_copia_e_cola,
-      pixExpiresAt: data.pix_expires_at
+      pixExpiresAt: data.pix_expires_at,
+      items: toOrderItems(data.items)
     };
   }
   /**
@@ -128,6 +138,8 @@ var PayGuinClient = class {
    *
    * Useful as a fallback when the `payment.paid` webhook is lost: poll the
    * status directly instead of waiting for an event that may never arrive.
+   * `reference` lets you confirm the order belongs to the purchase you expect
+   * before acting on an order id that came from a browser.
    *
    * @throws {PayGuinApiError} On non-2xx HTTP responses.
    * @throws {Error} On network failures or timeouts.
@@ -146,7 +158,37 @@ var PayGuinClient = class {
       status: data.status,
       amountCents: data.amount_cents,
       currency: data.currency,
-      expiresAt: data.expires_at ?? null
+      expiresAt: data.expires_at ?? null,
+      reference: data.reference || null
+    };
+  }
+  /**
+   * Reads the public summary of a Checkout: current name, price and whether
+   * it is active.
+   *
+   * Calls GET /api/v1/checkouts/{checkoutId}/summary. Lets a project show the
+   * price that is configured in PayGuin right now, so changing a price in the
+   * desktop app needs no deploy on the project side.
+   *
+   * @throws {PayGuinApiError} On non-2xx HTTP responses (404 for an unknown id).
+   * @throws {Error} On network failures or timeouts.
+   */
+  async getCheckoutSummary(checkoutId) {
+    if (!checkoutId) {
+      throw new TypeError("checkoutId must not be empty");
+    }
+    const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/summary`;
+    const response = await this.doFetch(url, { method: "GET" });
+    if (!response.ok) {
+      await this.throwApiError("getCheckoutSummary", response);
+    }
+    const data = await response.json();
+    return {
+      id: data.id,
+      name: data.name,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      isActive: data.is_active
     };
   }
   // -------------------------------------------------------------------------
@@ -181,9 +223,86 @@ var PayGuinClient = class {
     );
   }
 };
+function toOrderItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    checkoutId: item.checkout_id,
+    name: item.name,
+    amountCents: item.amount_cents
+  }));
+}
+
+// src/session.ts
+var import_node_crypto = require("crypto");
+var KEY_LABEL = "payguin-checkout-session-v1";
+var MAX_EXP_SECONDS = 1e11;
+function createCheckoutSession(payload, projectSigningSecret) {
+  if (!projectSigningSecret) {
+    throw new TypeError(
+      "PayGuin project signing secret must not be empty. Pass the Project's WebhookSigningSecret from your configuration."
+    );
+  }
+  const json = JSON.stringify(canonicalPayload(payload));
+  const body = Buffer.from(json, "utf-8").toString("base64url");
+  const key = (0, import_node_crypto.createHmac)("sha256", projectSigningSecret).update(KEY_LABEL, "utf-8").digest();
+  const signature = (0, import_node_crypto.createHmac)("sha256", key).update(body, "utf-8").digest("base64url");
+  return `${body}.${signature}`;
+}
+function canonicalPayload(p) {
+  if (!p || typeof p !== "object") {
+    throw new TypeError("Checkout session payload must be an object");
+  }
+  if (p.v !== 1) {
+    throw new TypeError("Checkout session payload 'v' must be 1");
+  }
+  requireNonEmptyString(p.checkout_id, "checkout_id");
+  if (!Array.isArray(p.bump_checkout_ids)) {
+    throw new TypeError("Checkout session payload 'bump_checkout_ids' must be an array");
+  }
+  p.bump_checkout_ids.forEach((id, i) => requireNonEmptyString(id, `bump_checkout_ids[${i}]`));
+  requireNonEmptyString(p.reference, "reference");
+  const payer = p.payer;
+  if (!payer || typeof payer !== "object") {
+    throw new TypeError("Checkout session payload 'payer' must be an object");
+  }
+  requireNonEmptyString(payer.name, "payer.name");
+  requireNonEmptyString(payer.email, "payer.email");
+  const phone = optionalString(payer.phone, "payer.phone");
+  const document = optionalString(payer.document, "payer.document");
+  if (!Number.isInteger(p.exp) || p.exp <= 0 || p.exp >= MAX_EXP_SECONDS) {
+    throw new TypeError(
+      "Checkout session payload 'exp' must be a positive integer in unix SECONDS (e.g. Math.floor(Date.now() / 1000) + 30 * 60)"
+    );
+  }
+  return {
+    v: 1,
+    checkout_id: p.checkout_id,
+    bump_checkout_ids: [...p.bump_checkout_ids],
+    reference: p.reference,
+    payer: {
+      name: payer.name,
+      email: payer.email,
+      ...phone ? { phone } : {},
+      ...document ? { document } : {}
+    },
+    exp: p.exp
+  };
+}
+function requireNonEmptyString(value, field) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(`Checkout session payload '${field}' must be a non-empty string`);
+  }
+}
+function optionalString(value, field) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (typeof value !== "string") {
+    throw new TypeError(`Checkout session payload '${field}' must be a string`);
+  }
+  return value;
+}
 
 // src/webhook.ts
-var import_node_crypto = require("crypto");
+var import_node_crypto2 = require("crypto");
 var HEADER_SIGNATURE = "x-payguin-signature";
 var HEADER_IDEMPOTENCY_KEY = "x-payguin-idempotency-key";
 var HEADER_EVENT = "x-payguin-event";
@@ -211,7 +330,7 @@ function verifyWebhookSignature(rawBody, signatureHeader, secret) {
     return { valid: false, reason: "Signature is not a valid 64-character hex string" };
   }
   const bodyStr = typeof rawBody === "string" ? rawBody : rawBody.toString("utf-8");
-  const mac = (0, import_node_crypto.createHmac)("sha256", secret);
+  const mac = (0, import_node_crypto2.createHmac)("sha256", secret);
   mac.update(bodyStr, "utf-8");
   const expectedHex = mac.digest("hex");
   const expectedBuf = Buffer.from(expectedHex, "hex");
@@ -219,7 +338,7 @@ function verifyWebhookSignature(rawBody, signatureHeader, secret) {
   if (expectedBuf.length !== receivedBuf.length) {
     return { valid: false, reason: "Signature length mismatch" };
   }
-  if (!(0, import_node_crypto.timingSafeEqual)(expectedBuf, receivedBuf)) {
+  if (!(0, import_node_crypto2.timingSafeEqual)(expectedBuf, receivedBuf)) {
     return { valid: false, reason: "Signature does not match" };
   }
   return { valid: true };
@@ -232,13 +351,12 @@ function parseWebhookEvent(rawBody, idempotencyKey) {
   if (!payload.order?.id) {
     throw new Error("PayGuin webhook payload is missing 'order.id'");
   }
+  if (payload.order.items !== void 0 && !Array.isArray(payload.order.items)) {
+    throw new Error("PayGuin webhook payload has a non-array 'order.items'");
+  }
   return {
-    event: payload.event,
-    order: payload.order,
-    checkout: payload.checkout,
-    payer: payload.payer,
+    ...payload,
     metadata: payload.metadata ?? {},
-    timestamp: payload.timestamp,
     idempotencyKey: idempotencyKey ?? null
   };
 }
@@ -322,6 +440,7 @@ var PayGuinEventType = {
   PayGuinApiError,
   PayGuinClient,
   PayGuinEventType,
+  createCheckoutSession,
   handleWebhook,
   parseWebhookEvent,
   verifyWebhookSignature

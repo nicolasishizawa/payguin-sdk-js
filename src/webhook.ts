@@ -122,8 +122,12 @@ export function verifyWebhookSignature(
  *
  * @param rawBody        - The raw body string (already verified by HMAC).
  * @param idempotencyKey - The X-PayGuin-Idempotency-Key header value (optional).
+ * `order.items` (every paid line, main Checkout included) comes through as
+ * sent; it is absent on servers older than order bump.
+ *
  * @throws {SyntaxError} If the body is not valid JSON.
- * @throws {Error} If required fields (event, order.id) are missing.
+ * @throws {Error} If required fields (event, order.id) are missing, or if
+ *                 `order.items` is present but not an array.
  */
 export function parseWebhookEvent(
   rawBody: string,
@@ -137,14 +141,17 @@ export function parseWebhookEvent(
   if (!payload.order?.id) {
     throw new Error("PayGuin webhook payload is missing 'order.id'");
   }
+  // Callers grant access per item; a non-list here would blow up (or be
+  // silently skipped) in their loop. Better a parse_error they can see.
+  if (payload.order.items !== undefined && !Array.isArray(payload.order.items)) {
+    throw new Error("PayGuin webhook payload has a non-array 'order.items'");
+  }
 
+  // Spread the whole payload instead of copying a fixed list of fields: a
+  // field PayGuin adds later reaches the caller instead of vanishing here.
   return {
-    event: payload.event,
-    order: payload.order,
-    checkout: payload.checkout,
-    payer: payload.payer,
+    ...payload,
     metadata: payload.metadata ?? {},
-    timestamp: payload.timestamp,
     idempotencyKey: idempotencyKey ?? null,
   } as PayGuinWebhookEvent;
 }

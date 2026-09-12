@@ -2,8 +2,10 @@
  * @payguin/sdk — TypeScript SDK for integrating with PayGuin PIX payment gateway.
  *
  * Covers the full PayGuin contract:
- * - Charge creation (PIX copia-e-cola)
+ * - Charge creation (PIX copia-e-cola), with order-bump extras via a signed session
+ * - Checkout session signing (embedded checkout)
  * - Order status polling
+ * - Checkout summary (current price)
  * - Webhook signature verification (HMAC-SHA256)
  * - Webhook event parsing (typed discriminated union)
  * - Idempotency store for deduplication
@@ -16,6 +18,9 @@ export { PayGuinClient } from "./client.js";
 
 // Errors
 export { PayGuinApiError } from "./errors.js";
+
+// Checkout session (embed)
+export { createCheckoutSession } from "./session.js";
 
 // Webhook
 export {
@@ -47,10 +52,13 @@ export type {
   CreateChargeInput,
   ChargeResult,
   OrderStatus,
+  OrderItem,
+  CheckoutSummary,
 
   // Webhook payload (raw)
   PayGuinWebhookPayload,
   PayGuinOrder,
+  PayGuinOrderItem,
   PayGuinCheckout,
   PayGuinPayer,
   PayGuinWebhookHeaders,
@@ -73,6 +81,12 @@ export type {
   // API wire types
   PayGuinCreateOrderRequest,
   PayGuinCreateOrderResponse,
+  PayGuinOrderStatusResponse,
+  PayGuinCheckoutSummaryResponse,
+
+  // Checkout session
+  CheckoutSessionPayload,
+  CheckoutSessionPayer,
 
   // Results
   VerificationResult,

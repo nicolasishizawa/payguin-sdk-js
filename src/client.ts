@@ -1,8 +1,8 @@
 /**
  * PayGuinClient - server-to-server client for the PayGuin checkout API.
  *
- * Creates PIX charges and queries order status. Zero runtime dependencies:
- * uses built-in fetch (Node 18+ / Bun) and node:crypto.
+ * Creates PIX charges, queries order status and reads Checkout summaries.
+ * Zero runtime dependencies: uses built-in fetch (Node 18+ / Bun) and node:crypto.
  *
  * Configuration is injected via constructor (no env var reads inside the SDK).
  */
@@ -13,8 +13,13 @@ import type {
   CreateChargeInput,
   ChargeResult,
   OrderStatus,
+  OrderItem,
+  CheckoutSummary,
+  PayGuinOrderItem,
   PayGuinCreateOrderRequest,
   PayGuinCreateOrderResponse,
+  PayGuinOrderStatusResponse,
+  PayGuinCheckoutSummaryResponse,
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -44,6 +49,8 @@ export class PayGuinClient {
    *
    * `reference` and `metadata` are accepted end to end: the Go backend persists
    * them on the Order and echoes them back in the outbound webhook payload.
+   * With a `session`, the extras in `bumpCheckoutIds` are added to the charge
+   * (PayGuin sums the prices server-side) and the reference comes from the token.
    *
    * @throws {PayGuinApiError} On non-2xx HTTP responses.
    * @throws {Error} On network failures or timeouts.
@@ -65,12 +72,21 @@ export class PayGuinClient {
       },
     };
 
-    // Omitted when undefined so the backend keeps the Checkout defaults.
+    // Omitted when undefined so the backend keeps the Checkout defaults (and
+    // so a server that predates a field never sees it: it rejects unknown
+    // fields with 400).
     if (input.reference !== undefined) {
       payload.reference = input.reference;
     }
     if (input.metadata !== undefined) {
       payload.metadata = input.metadata;
+    }
+    if (input.session !== undefined) {
+      payload.session = input.session;
+    }
+    // An empty array IS sent: "the buyer chose no extras" is an explicit answer.
+    if (input.bumpCheckoutIds !== undefined) {
+      payload.bump_checkout_ids = input.bumpCheckoutIds;
     }
 
     const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/orders`;
@@ -89,11 +105,14 @@ export class PayGuinClient {
     return {
       orderId: data.order_id,
       externalId: data.external_id,
+      // The server omits an empty reference; "" and absent both mean "none".
+      reference: data.reference || null,
       status: data.status,
       amountCents: data.amount_cents,
       currency: data.currency,
       pixCopiaECola: data.pix_copia_e_cola,
       pixExpiresAt: data.pix_expires_at,
+      items: toOrderItems(data.items),
     };
   }
 
@@ -104,6 +123,8 @@ export class PayGuinClient {
    *
    * Useful as a fallback when the `payment.paid` webhook is lost: poll the
    * status directly instead of waiting for an event that may never arrive.
+   * `reference` lets you confirm the order belongs to the purchase you expect
+   * before acting on an order id that came from a browser.
    *
    * @throws {PayGuinApiError} On non-2xx HTTP responses.
    * @throws {Error} On network failures or timeouts.
@@ -120,18 +141,48 @@ export class PayGuinClient {
       await this.throwApiError("getOrderStatus", response);
     }
 
-    const data = (await response.json()) as {
-      status: OrderStatus["status"];
-      amount_cents: number;
-      currency: string;
-      expires_at?: string | null;
-    };
+    const data = (await response.json()) as PayGuinOrderStatusResponse;
 
     return {
       status: data.status,
       amountCents: data.amount_cents,
       currency: data.currency,
       expiresAt: data.expires_at ?? null,
+      reference: data.reference || null,
+    };
+  }
+
+  /**
+   * Reads the public summary of a Checkout: current name, price and whether
+   * it is active.
+   *
+   * Calls GET /api/v1/checkouts/{checkoutId}/summary. Lets a project show the
+   * price that is configured in PayGuin right now, so changing a price in the
+   * desktop app needs no deploy on the project side.
+   *
+   * @throws {PayGuinApiError} On non-2xx HTTP responses (404 for an unknown id).
+   * @throws {Error} On network failures or timeouts.
+   */
+  async getCheckoutSummary(checkoutId: string): Promise<CheckoutSummary> {
+    if (!checkoutId) {
+      throw new TypeError("checkoutId must not be empty");
+    }
+
+    const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/summary`;
+    const response = await this.doFetch(url, { method: "GET" });
+
+    if (!response.ok) {
+      await this.throwApiError("getCheckoutSummary", response);
+    }
+
+    const data = (await response.json()) as PayGuinCheckoutSummaryResponse;
+
+    return {
+      id: data.id,
+      name: data.name,
+      amountCents: data.amount_cents,
+      currency: data.currency,
+      isActive: data.is_active,
     };
   }
 
@@ -174,4 +225,14 @@ export class PayGuinClient {
       body || undefined,
     );
   }
+}
+
+/** Wire items → camelCase. A server that predates order bump sends none: []. */
+function toOrderItems(items: PayGuinOrderItem[] | undefined): OrderItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    checkoutId: item.checkout_id,
+    name: item.name,
+    amountCents: item.amount_cents,
+  }));
 }

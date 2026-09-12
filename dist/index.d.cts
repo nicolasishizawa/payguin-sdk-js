@@ -28,14 +28,32 @@ interface PayGuinWebhookPayload {
     payer: PayGuinPayer;
     metadata: Record<string, unknown>;
 }
+/**
+ * One paid line of an order, as PayGuin sends it (wire names).
+ * The main Checkout is always one of the items; order-bump extras are the rest.
+ */
+interface PayGuinOrderItem {
+    checkout_id: string;
+    name: string;
+    /** Price of this Checkout at order time, integer cents. */
+    amount_cents: number;
+}
 interface PayGuinOrder {
     id: string;
     external_id: string;
+    /** Your correlation id (from the checkout session or `createCharge`). Empty string when none. */
+    reference: string;
     status: string;
+    /** Total charged: sum of `items`, computed by PayGuin. */
     amount_cents: number;
     currency: string;
     paid_at: string | null;
     created_at: string;
+    /**
+     * Every line of the order, main Checkout included. Absent on servers older
+     * than the order-bump release; treat absent as "only `checkout`".
+     */
+    items?: PayGuinOrderItem[];
 }
 interface PayGuinCheckout {
     id: string;
@@ -110,44 +128,87 @@ interface PayGuinCreateOrderRequest {
         phone: string;
         document: string;
     };
-    /**
-     * Caller-defined reference for correlation.
-     * NOTE: the Go backend does NOT accept this field yet.
-     * Including it is forward-compatible; it will be ignored until
-     * the backend adds support.
-     */
+    /** Caller-defined reference for correlation. Returned in `order.reference`. */
     reference?: string;
     /**
      * Arbitrary key-value metadata attached to the order.
-     * NOTE: the Go backend does NOT accept this field yet.
-     * Same forward-compatibility note as `reference`.
+     *
+     * The Checkout's own metadata is inherited by every Order created on it, and
+     * these keys are merged on top: order keys win, the rest survive. Null becomes
+     * an empty object in the webhook payload, never `null`.
      */
     metadata?: Record<string, unknown>;
+    /** Signed checkout session (see `createCheckoutSession`). */
+    session?: string;
+    /** Extras the buyer chose; must be a subset of the session's `bump_checkout_ids`. */
+    bump_checkout_ids?: string[];
 }
 /** Response from PayGuin: POST /api/v1/checkouts/{checkoutId}/orders */
 interface PayGuinCreateOrderResponse {
     order_id: string;
     external_id: string;
+    /** Omitted by the server when the order has no reference. */
+    reference?: string;
     status: string;
     amount_cents: number;
     currency: string;
     pix_copia_e_cola: string;
     pix_expires_at: string | null;
+    /** Every line charged, main Checkout included. Absent on servers before order bump. */
+    items?: PayGuinOrderItem[];
+}
+/** Response from PayGuin: GET /api/v1/orders/{orderId}/status */
+interface PayGuinOrderStatusResponse {
+    status: OrderStatus["status"];
+    amount_cents: number;
+    currency: string;
+    expires_at?: string | null;
+    /** Not personal data: lets the project check whose order this is. */
+    reference?: string;
+}
+/** Response from PayGuin: GET /api/v1/checkouts/{checkoutId}/summary */
+interface PayGuinCheckoutSummaryResponse {
+    id: string;
+    name: string;
+    amount_cents: number;
+    currency: string;
+    is_active: boolean;
+}
+/** One line of an order (camelCase view of {@link PayGuinOrderItem}). */
+interface OrderItem {
+    checkoutId: string;
+    name: string;
+    amountCents: number;
 }
 interface ChargeResult {
     orderId: string;
     externalId: string;
+    /** Reference stored on the order (from the session when one was sent); null when none. */
+    reference: string | null;
     status: string;
+    /** Total: main Checkout + chosen extras, computed by PayGuin. */
     amountCents: number;
     currency: string;
     pixCopiaECola: string;
     pixExpiresAt: string | null;
+    /** Lines charged, main Checkout included. Empty when the server does not report items. */
+    items: OrderItem[];
 }
 interface OrderStatus {
     status: "pending" | "paid" | "canceled" | "failed" | "expired";
     amountCents: number;
     currency: string;
     expiresAt: string | null;
+    /** Reference stored on the order; null when none. */
+    reference: string | null;
+}
+/** Public summary of a Checkout — current price and whether it can be sold. */
+interface CheckoutSummary {
+    id: string;
+    name: string;
+    amountCents: number;
+    currency: string;
+    isActive: boolean;
 }
 interface PayerInput {
     name: string;
@@ -159,15 +220,54 @@ interface PayerInput {
 interface CreateChargeInput {
     payer: PayerInput;
     /**
-     * Caller-defined reference for correlation.
-     * NOTE: requires a pending PayGuin backend change to take effect.
+     * Caller-defined reference for correlation. Persisted on the Order and
+     * echoed back as `order.reference` in the webhook.
+     *
+     * With a `session`, the reference inside the signed token is the one that
+     * counts — PayGuin never takes it from the request body in that case.
      */
     reference?: string;
     /**
-     * Arbitrary key-value metadata attached to the order.
-     * NOTE: requires a pending PayGuin backend change to take effect.
+     * Arbitrary key-value metadata attached to the order, merged on top of the
+     * Checkout's own metadata (order keys win) and echoed back in the webhook.
      */
     metadata?: Record<string, unknown>;
+    /**
+     * Signed checkout session (see `createCheckoutSession`). Sent as `session`.
+     * Required for order bump: it is what authorizes the extras and the reference.
+     */
+    session?: string;
+    /**
+     * Extras the buyer chose, a subset of the session's `bump_checkout_ids`.
+     * Sent as `bump_checkout_ids`. An empty array means "no extras" explicitly.
+     */
+    bumpCheckoutIds?: string[];
+}
+/** Payer data pre-filled on the checkout page. Empty `phone`/`document` are omitted. */
+interface CheckoutSessionPayer {
+    name: string;
+    email: string;
+    phone?: string;
+    /** CPF or CNPJ. Travels inside the signed token; never log the token. */
+    document?: string;
+}
+/**
+ * What the project signs for PayGuin (wire names, snake_case, on purpose: this
+ * is exactly the JSON that gets signed). PayGuin trusts `reference` and the
+ * offered extras ONLY from here, never from the browser.
+ */
+interface CheckoutSessionPayload {
+    /** Token format version. */
+    v: 1;
+    /** Main Checkout being sold. */
+    checkout_id: string;
+    /** Extras OFFERED on the page (order bump); the buyer picks among them. */
+    bump_checkout_ids: string[];
+    /** Your purchase id. Comes back as `order.reference` on the webhook. */
+    reference: string;
+    payer: CheckoutSessionPayer;
+    /** Expiry in unix SECONDS (not milliseconds). Keep it short, e.g. now + 30 min. */
+    exp: number;
 }
 interface VerificationResult {
     valid: boolean;
@@ -193,8 +293,8 @@ interface PayGuinClientConfig {
 /**
  * PayGuinClient - server-to-server client for the PayGuin checkout API.
  *
- * Creates PIX charges and queries order status. Zero runtime dependencies:
- * uses built-in fetch (Node 18+ / Bun) and node:crypto.
+ * Creates PIX charges, queries order status and reads Checkout summaries.
+ * Zero runtime dependencies: uses built-in fetch (Node 18+ / Bun) and node:crypto.
  *
  * Configuration is injected via constructor (no env var reads inside the SDK).
  */
@@ -210,10 +310,10 @@ declare class PayGuinClient {
      * Calls POST /api/v1/checkouts/{checkoutId}/orders with payer data.
      * Returns the PIX copia-e-cola string and order metadata.
      *
-     * NOTE: `reference` and `metadata` fields in the input are forward-compatible.
-     * The Go backend does NOT accept them yet. They are included in the request
-     * body but will be ignored until the backend adds support. Correlation today
-     * works via the returned `orderId`.
+     * `reference` and `metadata` are accepted end to end: the Go backend persists
+     * them on the Order and echoes them back in the outbound webhook payload.
+     * With a `session`, the extras in `bumpCheckoutIds` are added to the charge
+     * (PayGuin sums the prices server-side) and the reference comes from the token.
      *
      * @throws {PayGuinApiError} On non-2xx HTTP responses.
      * @throws {Error} On network failures or timeouts.
@@ -226,11 +326,25 @@ declare class PayGuinClient {
      *
      * Useful as a fallback when the `payment.paid` webhook is lost: poll the
      * status directly instead of waiting for an event that may never arrive.
+     * `reference` lets you confirm the order belongs to the purchase you expect
+     * before acting on an order id that came from a browser.
      *
      * @throws {PayGuinApiError} On non-2xx HTTP responses.
      * @throws {Error} On network failures or timeouts.
      */
     getOrderStatus(orderId: string): Promise<OrderStatus>;
+    /**
+     * Reads the public summary of a Checkout: current name, price and whether
+     * it is active.
+     *
+     * Calls GET /api/v1/checkouts/{checkoutId}/summary. Lets a project show the
+     * price that is configured in PayGuin right now, so changing a price in the
+     * desktop app needs no deploy on the project side.
+     *
+     * @throws {PayGuinApiError} On non-2xx HTTP responses (404 for an unknown id).
+     * @throws {Error} On network failures or timeouts.
+     */
+    getCheckoutSummary(checkoutId: string): Promise<CheckoutSummary>;
     private doFetch;
     private throwApiError;
 }
@@ -249,6 +363,37 @@ declare class PayGuinApiError extends Error {
     readonly kind: "PayGuinApiError";
     constructor(message: string, httpStatus: number, errorCode?: string | undefined, errorMessage?: string | undefined, responseBody?: string | undefined);
 }
+
+/**
+ * Checkout session — the signed token a project hands to the embedded PayGuin
+ * checkout page (via postMessage, never in the URL).
+ *
+ *   token = base64url(payloadJSON) + "." + base64url(HMAC-SHA256(key, base64url(payloadJSON)))
+ *   key   = HMAC-SHA256(projectSigningSecret, "payguin-checkout-session-v1")
+ *
+ * Why a derived key instead of the webhook secret itself: the same secret
+ * already signs outbound webhooks; deriving a purpose-bound key means a token
+ * signature can never be replayed as a webhook signature (or vice versa), and
+ * no new secret has to be configured per project.
+ *
+ * base64url is RFC 4648 §5 WITHOUT padding (Node's "base64url", Go's
+ * base64.RawURLEncoding). PayGuin verifies the HMAC over the base64url string
+ * exactly as received, so it never depends on how the JSON was serialized —
+ * but we still emit a fixed field order so the output is reproducible and can
+ * be cross-checked against a known vector.
+ */
+
+/**
+ * Builds and signs a checkout session token.
+ *
+ * @param payload              - Session contents (see {@link CheckoutSessionPayload}).
+ * @param projectSigningSecret - The Project's webhook signing secret (the same one
+ *                               used with `verifyWebhookSignature`).
+ * @returns The token: `<base64url payload>.<base64url signature>`.
+ * @throws {TypeError} On an empty secret or a payload outside the contract
+ *                     (programmer errors: failing loudly beats a token PayGuin rejects later).
+ */
+declare function createCheckoutSession(payload: CheckoutSessionPayload, projectSigningSecret: string): string;
 
 /**
  * Idempotency store — prevents duplicate processing of webhook events.
@@ -350,8 +495,12 @@ declare function verifyWebhookSignature(rawBody: string | Buffer, signatureHeade
  *
  * @param rawBody        - The raw body string (already verified by HMAC).
  * @param idempotencyKey - The X-PayGuin-Idempotency-Key header value (optional).
+ * `order.items` (every paid line, main Checkout included) comes through as
+ * sent; it is absent on servers older than order bump.
+ *
  * @throws {SyntaxError} If the body is not valid JSON.
- * @throws {Error} If required fields (event, order.id) are missing.
+ * @throws {Error} If required fields (event, order.id) are missing, or if
+ *                 `order.items` is present but not an array.
  */
 declare function parseWebhookEvent(rawBody: string, idempotencyKey?: string | null): PayGuinWebhookEvent;
 /**
@@ -387,4 +536,4 @@ interface HandleWebhookOptions {
  */
 declare function handleWebhook(opts: HandleWebhookOptions): Promise<WebhookHandlerResult>;
 
-export { type ChargeResult, type CreateChargeInput, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderStatus, PayGuinApiError, type PayGuinCheckout, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, type VerificationResult, type WebhookHandlerResult, handleWebhook, parseWebhookEvent, verifyWebhookSignature };
+export { type ChargeResult, type CheckoutSessionPayer, type CheckoutSessionPayload, type CheckoutSummary, type CreateChargeInput, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderItem, type OrderStatus, PayGuinApiError, type PayGuinCheckout, type PayGuinCheckoutSummaryResponse, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinOrderItem, type PayGuinOrderStatusResponse, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, type VerificationResult, type WebhookHandlerResult, createCheckoutSession, handleWebhook, parseWebhookEvent, verifyWebhookSignature };

@@ -1,6 +1,6 @@
 {
   "name": "@payguin/sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "TypeScript SDK for integrating with PayGuin PIX payment gateway — charge creation, order status, and webhook verification.",
   "license": "MIT",
   "type": "module",
@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "version": "tsup && git add -A dist"
   },
   "repository": {
