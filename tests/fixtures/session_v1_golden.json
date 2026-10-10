@@ -1,0 +1,31 @@
+{
+  "note": "Golden v1 gravado com o Sign ANTERIOR ao sub 6 (sessao v2). Nunca regerar: e a prova de que a v1 nao mudou byte a byte.",
+  "secret": "whsec_golden_v1_pre_sub6",
+  "cases": [
+    {
+      "name": "completo",
+      "payload_json": "{\"v\":1,\"checkout_id\":\"8b1b3a35-ac0b-4de7-b46b-13c2f3931d4e\",\"bump_checkout_ids\":[\"2f6c1f7e-3d1b-4c55-9d6e-0a7d5b1e9c21\",\"c0a8012e-7a4f-4f0e-8b7d-5e2a1c3b4d5f\"],\"reference\":\"pur_01J8Z3K9Q2\",\"payer\":{\"name\":\"Fulana de Tal\",\"email\":\"fulana@example.com\",\"phone\":\"11987654321\",\"document\":\"12345678909\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoxLCJjaGVja291dF9pZCI6IjhiMWIzYTM1LWFjMGItNGRlNy1iNDZiLTEzYzJmMzkzMWQ0ZSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbIjJmNmMxZjdlLTNkMWItNGM1NS05ZDZlLTBhN2Q1YjFlOWMyMSIsImMwYTgwMTJlLTdhNGYtNGYwZS04YjdkLTVlMmExYzNiNGQ1ZiJdLCJyZWZlcmVuY2UiOiJwdXJfMDFKOFozSzlRMiIsInBheWVyIjp7Im5hbWUiOiJGdWxhbmEgZGUgVGFsIiwiZW1haWwiOiJmdWxhbmFAZXhhbXBsZS5jb20iLCJwaG9uZSI6IjExOTg3NjU0MzIxIiwiZG9jdW1lbnQiOiIxMjM0NTY3ODkwOSJ9LCJleHAiOjE4OTM0NTYwMDB9.LXufsNPmlcQgD9yvp-c8CdlpbjHq4125MoUiC18LWIg"
+    },
+    {
+      "name": "minimo_sem_extras_nil",
+      "payload_json": "{\"v\":1,\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"bump_checkout_ids\":[],\"reference\":\"purchase-1\",\"payer\":{\"name\":\"Joao\",\"email\":\"joao@example.com\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoxLCJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbXSwicmVmZXJlbmNlIjoicHVyY2hhc2UtMSIsInBheWVyIjp7Im5hbWUiOiJKb2FvIiwiZW1haWwiOiJqb2FvQGV4YW1wbGUuY29tIn0sImV4cCI6MTg5MzQ1NjAwMH0.in3dxX9_mVSXlYh_ZvpDxohzLJSONbJiUs8U7eQ8Nfs"
+    },
+    {
+      "name": "minimo_sem_extras_vazio",
+      "payload_json": "{\"v\":1,\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"bump_checkout_ids\":[],\"reference\":\"purchase-2\",\"payer\":{\"name\":\"Joao\",\"email\":\"joao@example.com\",\"phone\":\"5511999999999\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoxLCJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbXSwicmVmZXJlbmNlIjoicHVyY2hhc2UtMiIsInBheWVyIjp7Im5hbWUiOiJKb2FvIiwiZW1haWwiOiJqb2FvQGV4YW1wbGUuY29tIiwicGhvbmUiOiI1NTExOTk5OTk5OTk5In0sImV4cCI6MTg5MzQ1NjAwMH0.s1PSTw75hQ_qkfiHu__lmUdgGRlsBJnNdMP6z2BFcQI"
+    },
+    {
+      "name": "acentos_e_html",
+      "payload_json": "{\"v\":1,\"checkout_id\":\"8b1b3a35-ac0b-4de7-b46b-13c2f3931d4e\",\"bump_checkout_ids\":[\"2f6c1f7e-3d1b-4c55-9d6e-0a7d5b1e9c21\"],\"reference\":\"ref/\\\"aspas\\\"\\barra\",\"payer\":{\"name\":\"José Ação \u0026 \u003cLtda\u003e ü\",\"email\":\"jose+tag@example.com\",\"document\":\"12345678000190\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoxLCJjaGVja291dF9pZCI6IjhiMWIzYTM1LWFjMGItNGRlNy1iNDZiLTEzYzJmMzkzMWQ0ZSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbIjJmNmMxZjdlLTNkMWItNGM1NS05ZDZlLTBhN2Q1YjFlOWMyMSJdLCJyZWZlcmVuY2UiOiJyZWYvXCJhc3Bhc1wiXGJhcnJhIiwicGF5ZXIiOnsibmFtZSI6Ikpvc8OpIEHDp8OjbyAmIDxMdGRhPiDDvCIsImVtYWlsIjoiam9zZSt0YWdAZXhhbXBsZS5jb20iLCJkb2N1bWVudCI6IjEyMzQ1Njc4MDAwMTkwIn0sImV4cCI6MTg5MzQ1NjAwMH0.S_G26EFOA8J3qjvg-fiV5MUbM0YGHd6JaBj-JvmldTg"
+    },
+    {
+      "name": "dez_extras",
+      "payload_json": "{\"v\":1,\"checkout_id\":\"8b1b3a35-ac0b-4de7-b46b-13c2f3931d4e\",\"bump_checkout_ids\":[\"aaaaaaaa-1111-4111-8111-111111111111\",\"bbbbbbbb-1111-4111-8111-111111111111\",\"cccccccc-1111-4111-8111-111111111111\",\"dddddddd-1111-4111-8111-111111111111\",\"eeeeeeee-1111-4111-8111-111111111111\",\"ffffffff-1111-4111-8111-111111111111\",\"gggggggg-1111-4111-8111-111111111111\",\"hhhhhhhh-1111-4111-8111-111111111111\",\"iiiiiiii-1111-4111-8111-111111111111\",\"jjjjjjjj-1111-4111-8111-111111111111\"],\"reference\":\"c0a8012e-7a4f-4f0e-8b7d-5e2a1c3b4d5f\",\"payer\":{\"name\":\"Maria\",\"email\":\"maria@example.com\",\"phone\":\"11987654321\",\"document\":\"12345678909\"},\"exp\":1760000000}",
+      "token": "eyJ2IjoxLCJjaGVja291dF9pZCI6IjhiMWIzYTM1LWFjMGItNGRlNy1iNDZiLTEzYzJmMzkzMWQ0ZSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbImFhYWFhYWFhLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJiYmJiYmJiLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImNjY2NjY2NjLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImRkZGRkZGRkLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImVlZWVlZWVlLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImZmZmZmZmZmLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImdnZ2dnZ2dnLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImhoaGhoaGhoLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImlpaWlpaWlpLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImpqampqampqLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSJdLCJyZWZlcmVuY2UiOiJjMGE4MDEyZS03YTRmLTRmMGUtOGI3ZC01ZTJhMWMzYjRkNWYiLCJwYXllciI6eyJuYW1lIjoiTWFyaWEiLCJlbWFpbCI6Im1hcmlhQGV4YW1wbGUuY29tIiwicGhvbmUiOiIxMTk4NzY1NDMyMSIsImRvY3VtZW50IjoiMTIzNDU2Nzg5MDkifSwiZXhwIjoxNzYwMDAwMDAwfQ.oBz-VcJQ2y6j2qJekuofZ8eIzxtv4enwUevfWibHiqU"
+    }
+  ]
+}

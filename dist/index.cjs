@@ -236,6 +236,9 @@ function toOrderItems(items) {
 var import_node_crypto = require("crypto");
 var KEY_LABEL = "payguin-checkout-session-v1";
 var MAX_EXP_SECONDS = 1e11;
+var MAX_AMOUNTS = 11;
+var MAX_AMOUNT_CENTS = 1e9;
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function createCheckoutSession(payload, projectSigningSecret) {
   if (!projectSigningSecret) {
     throw new TypeError(
@@ -252,8 +255,8 @@ function canonicalPayload(p) {
   if (!p || typeof p !== "object") {
     throw new TypeError("Checkout session payload must be an object");
   }
-  if (p.v !== 1) {
-    throw new TypeError("Checkout session payload 'v' must be 1");
+  if (p.v !== 1 && p.v !== 2) {
+    throw new TypeError("Checkout session payload 'v' must be 1 or 2");
   }
   requireNonEmptyString(p.checkout_id, "checkout_id");
   if (!Array.isArray(p.bump_checkout_ids)) {
@@ -274,19 +277,82 @@ function canonicalPayload(p) {
       "Checkout session payload 'exp' must be a positive integer in unix SECONDS (e.g. Math.floor(Date.now() / 1000) + 30 * 60)"
     );
   }
+  const amounts = canonicalAmounts(p);
+  const canonicalPayer = {
+    name: payer.name,
+    email: payer.email,
+    ...phone ? { phone } : {},
+    ...document ? { document } : {}
+  };
+  if (!amounts) {
+    return {
+      v: 1,
+      checkout_id: p.checkout_id,
+      bump_checkout_ids: [...p.bump_checkout_ids],
+      reference: p.reference,
+      payer: canonicalPayer,
+      exp: p.exp
+    };
+  }
   return {
-    v: 1,
+    v: 2,
     checkout_id: p.checkout_id,
     bump_checkout_ids: [...p.bump_checkout_ids],
+    amounts,
     reference: p.reference,
-    payer: {
-      name: payer.name,
-      email: payer.email,
-      ...phone ? { phone } : {},
-      ...document ? { document } : {}
-    },
+    payer: canonicalPayer,
     exp: p.exp
   };
+}
+function canonicalAmounts(p) {
+  const raw = p.amounts;
+  if (raw === void 0 || raw === null) return void 0;
+  if (!Array.isArray(raw)) {
+    throw new TypeError("Checkout session payload 'amounts' must be an array");
+  }
+  if (raw.length === 0) return void 0;
+  if (p.v !== 2) {
+    throw new TypeError(
+      "Checkout session payload 'amounts' requires 'v' 2 (a v1 session carries no prices)"
+    );
+  }
+  if (raw.length > MAX_AMOUNTS) {
+    throw new TypeError(
+      `Checkout session payload 'amounts' must have at most ${MAX_AMOUNTS} entries (the main checkout + 10 extras)`
+    );
+  }
+  const allowed = new Set(
+    [p.checkout_id, ...p.bump_checkout_ids].filter((id) => UUID_RE.test(id)).map((id) => id.toLowerCase())
+  );
+  const seen = /* @__PURE__ */ new Set();
+  return raw.map((entry, i) => {
+    const field = `amounts[${i}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new TypeError(`Checkout session payload '${field}' must be an object`);
+    }
+    const { checkout_id: id, amount_cents: cents } = entry;
+    if (typeof id !== "string" || !UUID_RE.test(id)) {
+      throw new TypeError(
+        `Checkout session payload '${field}.checkout_id' must be a canonical UUID (36 characters)`
+      );
+    }
+    const key = id.toLowerCase();
+    if (!allowed.has(key)) {
+      throw new TypeError(
+        `Checkout session payload '${field}.checkout_id' must be the payload's 'checkout_id' or one of 'bump_checkout_ids'`
+      );
+    }
+    if (seen.has(key)) {
+      throw new TypeError(`Checkout session payload '${field}.checkout_id' is repeated`);
+    }
+    seen.add(key);
+    if (typeof cents !== "number" || !Number.isInteger(cents) || cents < 1 || cents > MAX_AMOUNT_CENTS) {
+      throw new TypeError(
+        `Checkout session payload '${field}.amount_cents' must be an integer from 1 to ${MAX_AMOUNT_CENTS} (cents)`
+      );
+    }
+    return { checkout_id: id, amount_cents: cents };
+  });
 }
 function requireNonEmptyString(value, field) {
   if (typeof value !== "string" || value.length === 0) {
