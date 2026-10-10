@@ -18,12 +18,12 @@ It's a git dependency, pinned to a tag — no registry, no surprises:
 // package.json
 {
   "dependencies": {
-    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.2.0"
+    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.3.0"
   }
 }
 ```
 
-Then `bun install` (or `npm install`). Bump the `#v0.2.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
+Then `bun install` (or `npm install`). Bump the `#v0.3.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
 
 ---
 
@@ -153,6 +153,37 @@ const session = createCheckoutSession(
 ```
 
 Under the hood: `base64url(payloadJSON) + "." + base64url(HMAC-SHA256(key, base64url(payloadJSON)))`, with `key = HMAC-SHA256(secret, "payguin-checkout-session-v1")` — a key derived for this purpose, so a session signature can never pass as a webhook signature. base64url has no padding. A payload outside the contract (missing field, `exp` in milliseconds, empty secret) throws a `TypeError` right away instead of minting a token PayGuin will refuse.
+
+### Per-item prices (session v2, since 0.3.0)
+
+When your app sells an item at its own price (an affiliate price, say), put the price **in the session** — never in the browser. Use `v: 2` and list only the items that have their own price; the others are charged the Checkout price as usual:
+
+```ts
+const session = createCheckoutSession(
+  {
+    v: 2,
+    checkout_id: "main-checkout-uuid",
+    bump_checkout_ids: ["extra-1-uuid", "extra-2-uuid"],
+    amounts: [
+      { checkout_id: "main-checkout-uuid", amount_cents: 15000 }, // R$ 150,00 instead of the Checkout price
+      { checkout_id: "extra-2-uuid", amount_cents: 4041 },        // extra-1 keeps its Checkout price
+    ],
+    reference: purchase.id,
+    payer: { name: user.name, email: user.email },
+    exp: Math.floor(Date.now() / 1000) + 30 * 60,
+  },
+  process.env.PAYGUIN_WEBHOOK_SECRET!,
+);
+```
+
+PayGuin charges those values, shows them on the page, and reports them back in `order.items[].amount_cents` on the webhook — so check the paid amount against what you quoted. The rules are PayGuin's, checked here first (a `TypeError` naming the field, instead of a 403 `invalid_session` on the page):
+
+- `amounts` has 1 to 11 entries (the main checkout + 10 extras).
+- Each `checkout_id` is a canonical 36-character UUID, equal (case-insensitive) to the main `checkout_id` or one of `bump_checkout_ids`, and appears once.
+- Each `amount_cents` is an integer from `1` to `1_000_000_000` (R$ 10.000.000,00).
+- `v: 1` with a non-empty `amounts` throws: a v1 would silently charge the Checkout price.
+
+An absent, `null` or empty `amounts` signs a **v1, byte for byte the same as 0.2.0** — even with `v: 2` — so you can always pass the list you computed and let the SDK pick. Wire order is `v, checkout_id, bump_checkout_ids, amounts, reference, payer, exp`; the key and the label are the same in both versions. The PayGuin side must already understand v2 (servers before it refuse the token as `invalid_session`).
 
 ---
 

@@ -252,13 +252,17 @@ interface CheckoutSessionPayer {
     document?: string;
 }
 /**
- * What the project signs for PayGuin (wire names, snake_case, on purpose: this
- * is exactly the JSON that gets signed). PayGuin trusts `reference` and the
- * offered extras ONLY from here, never from the browser.
+ * Price charged for one item of a v2 session, overriding the Checkout's own
+ * `amount_cents`. Items without an entry are charged the Checkout price.
  */
-interface CheckoutSessionPayload {
-    /** Token format version. */
-    v: 1;
+interface CheckoutSessionAmount {
+    /** The main `checkout_id` or one of `bump_checkout_ids` (canonical 36-char UUID). */
+    checkout_id: string;
+    /** Integer cents, 1 to 1_000_000_000 (R$ 10.000.000,00). */
+    amount_cents: number;
+}
+/** Fields shared by every session version. */
+interface CheckoutSessionPayloadBase {
     /** Main Checkout being sold. */
     checkout_id: string;
     /** Extras OFFERED on the page (order bump); the buyer picks among them. */
@@ -269,6 +273,30 @@ interface CheckoutSessionPayload {
     /** Expiry in unix SECONDS (not milliseconds). Keep it short, e.g. now + 30 min. */
     exp: number;
 }
+/** v1: every item is charged the Checkout's own price. */
+interface CheckoutSessionPayloadV1 extends CheckoutSessionPayloadBase {
+    /** Token format version. */
+    v: 1;
+    /** A v1 carries no prices; a non-empty list here throws (use `v: 2`). */
+    amounts?: readonly [] | null;
+}
+/**
+ * v2: the session also fixes the price of the listed items (e.g. an affiliate
+ * price). Only items with their own price need an entry. An empty or absent
+ * `amounts` is signed as a v1, byte for byte.
+ */
+interface CheckoutSessionPayloadV2 extends CheckoutSessionPayloadBase {
+    /** Token format version. */
+    v: 2;
+    /** 1 to 11 entries; each id is the main checkout or an offered extra, no repeats. */
+    amounts?: readonly CheckoutSessionAmount[] | null;
+}
+/**
+ * What the project signs for PayGuin (wire names, snake_case, on purpose: this
+ * is exactly the JSON that gets signed). PayGuin trusts `reference`, the
+ * offered extras and the `amounts` ONLY from here, never from the browser.
+ */
+type CheckoutSessionPayload = CheckoutSessionPayloadV1 | CheckoutSessionPayloadV2;
 interface VerificationResult {
     valid: boolean;
     reason?: string;
@@ -381,6 +409,16 @@ declare class PayGuinApiError extends Error {
  * exactly as received, so it never depends on how the JSON was serialized —
  * but we still emit a fixed field order so the output is reproducible and can
  * be cross-checked against a known vector.
+ *
+ * Payload versions (the key label above belongs to the KEY, not the payload):
+ *
+ *   v1: {"v":1,"checkout_id","bump_checkout_ids","reference","payer","exp"}
+ *   v2: {"v":2,"checkout_id","bump_checkout_ids","amounts","reference","payer","exp"}
+ *       amounts = [{"checkout_id":"<uuid>","amount_cents":<int>}, ...]
+ *
+ * A non-empty `amounts` makes it a v2; without one (absent, null or []) the
+ * token is the v1 of before, byte for byte. The JSON has no spaces and does not
+ * escape & < > (JSON.stringify; PayGuin's Go side turns HTML escaping off).
  */
 
 /**
@@ -536,4 +574,4 @@ interface HandleWebhookOptions {
  */
 declare function handleWebhook(opts: HandleWebhookOptions): Promise<WebhookHandlerResult>;
 
-export { type ChargeResult, type CheckoutSessionPayer, type CheckoutSessionPayload, type CheckoutSummary, type CreateChargeInput, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderItem, type OrderStatus, PayGuinApiError, type PayGuinCheckout, type PayGuinCheckoutSummaryResponse, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinOrderItem, type PayGuinOrderStatusResponse, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, type VerificationResult, type WebhookHandlerResult, createCheckoutSession, handleWebhook, parseWebhookEvent, verifyWebhookSignature };
+export { type ChargeResult, type CheckoutSessionAmount, type CheckoutSessionPayer, type CheckoutSessionPayload, type CheckoutSessionPayloadV1, type CheckoutSessionPayloadV2, type CheckoutSummary, type CreateChargeInput, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderItem, type OrderStatus, PayGuinApiError, type PayGuinCheckout, type PayGuinCheckoutSummaryResponse, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinOrderItem, type PayGuinOrderStatusResponse, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, type VerificationResult, type WebhookHandlerResult, createCheckoutSession, handleWebhook, parseWebhookEvent, verifyWebhookSignature };

@@ -1,0 +1,23 @@
+{
+  "note": "Vetor fixo da sessao de checkout v2 (sub 6, DT-3). Calculado em Python (hmac/hashlib/base64 da stdlib), fora do Go e da SDK. O mesmo arquivo e conferido pelo PayGuin (Go), pela @payguin/sdk e pelo infinityia-back.",
+  "secret": "whsec_payguin_session_v2_vector_2026",
+  "key_hex": "8d9bdc26f502ef3a4b3f7b1460ca7b3b24255134726f30787230cb3ec2827e09",
+  "now_unix": 1893455000,
+  "vectors": [
+    {
+      "name": "completo_principal_e_um_extra",
+      "payload": "{\"v\":2,\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"bump_checkout_ids\":[\"22222222-2222-4222-8222-222222222222\",\"33333333-3333-4333-8333-333333333333\"],\"amounts\":[{\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"amount_cents\":15000},{\"checkout_id\":\"33333333-3333-4333-8333-333333333333\",\"amount_cents\":4041}],\"reference\":\"purchase-v2-1\",\"payer\":{\"name\":\"Maria Silva\",\"email\":\"maria@example.com\",\"phone\":\"5511999999999\",\"document\":\"12345678909\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoyLCJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbIjIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMiIsIjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyJdLCJhbW91bnRzIjpbeyJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImFtb3VudF9jZW50cyI6MTUwMDB9LHsiY2hlY2tvdXRfaWQiOiIzMzMzMzMzMy0zMzMzLTQzMzMtODMzMy0zMzMzMzMzMzMzMzMiLCJhbW91bnRfY2VudHMiOjQwNDF9XSwicmVmZXJlbmNlIjoicHVyY2hhc2UtdjItMSIsInBheWVyIjp7Im5hbWUiOiJNYXJpYSBTaWx2YSIsImVtYWlsIjoibWFyaWFAZXhhbXBsZS5jb20iLCJwaG9uZSI6IjU1MTE5OTk5OTk5OTkiLCJkb2N1bWVudCI6IjEyMzQ1Njc4OTA5In0sImV4cCI6MTg5MzQ1NjAwMH0.IkkySPButx_RaQ5Ng8KuJ1hy_QXvGrMWRdY_NIbU4tM"
+    },
+    {
+      "name": "minimo_so_principal",
+      "payload": "{\"v\":2,\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"bump_checkout_ids\":[],\"amounts\":[{\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"amount_cents\":1}],\"reference\":\"purchase-v2-2\",\"payer\":{\"name\":\"Joao\",\"email\":\"joao@example.com\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoyLCJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbXSwiYW1vdW50cyI6W3siY2hlY2tvdXRfaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJhbW91bnRfY2VudHMiOjF9XSwicmVmZXJlbmNlIjoicHVyY2hhc2UtdjItMiIsInBheWVyIjp7Im5hbWUiOiJKb2FvIiwiZW1haWwiOiJqb2FvQGV4YW1wbGUuY29tIn0sImV4cCI6MTg5MzQ1NjAwMH0.gAWmB4n0XkMfVdWEDFBomMrqMWdNqytR5OlgGSqrz-U"
+    },
+    {
+      "name": "so_extra_teto",
+      "payload": "{\"v\":2,\"checkout_id\":\"11111111-1111-4111-8111-111111111111\",\"bump_checkout_ids\":[\"22222222-2222-4222-8222-222222222222\"],\"amounts\":[{\"checkout_id\":\"22222222-2222-4222-8222-222222222222\",\"amount_cents\":1000000000}],\"reference\":\"purchase-v2-3\",\"payer\":{\"name\":\"Ana & Bia <Ltda>\",\"email\":\"ana@example.com\"},\"exp\":1893456000}",
+      "token": "eyJ2IjoyLCJjaGVja291dF9pZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImJ1bXBfY2hlY2tvdXRfaWRzIjpbIjIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMiJdLCJhbW91bnRzIjpbeyJjaGVja291dF9pZCI6IjIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMiIsImFtb3VudF9jZW50cyI6MTAwMDAwMDAwMH1dLCJyZWZlcmVuY2UiOiJwdXJjaGFzZS12Mi0zIiwicGF5ZXIiOnsibmFtZSI6IkFuYSAmIEJpYSA8THRkYT4iLCJlbWFpbCI6ImFuYUBleGFtcGxlLmNvbSJ9LCJleHAiOjE4OTM0NTYwMDB9.49FgBe08XDxDORmmWke8e3qXWzNu0C2OPYBhNTcbbK4"
+    }
+  ]
+}

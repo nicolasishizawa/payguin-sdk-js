@@ -3,7 +3,7 @@
  *
  * Covers the full PayGuin contract:
  * - Charge creation (PIX copia-e-cola), with order-bump extras via a signed session
- * - Checkout session signing (embedded checkout)
+ * - Checkout session signing (embedded checkout; v2 carries per-item prices)
  * - Order status polling
  * - Checkout summary (current price)
  * - Webhook signature verification (HMAC-SHA256)
@@ -86,6 +86,9 @@ export type {
 
   // Checkout session
   CheckoutSessionPayload,
+  CheckoutSessionPayloadV1,
+  CheckoutSessionPayloadV2,
+  CheckoutSessionAmount,
   CheckoutSessionPayer,
 
   // Results

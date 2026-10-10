@@ -332,13 +332,18 @@ export interface CheckoutSessionPayer {
 }
 
 /**
- * What the project signs for PayGuin (wire names, snake_case, on purpose: this
- * is exactly the JSON that gets signed). PayGuin trusts `reference` and the
- * offered extras ONLY from here, never from the browser.
+ * Price charged for one item of a v2 session, overriding the Checkout's own
+ * `amount_cents`. Items without an entry are charged the Checkout price.
  */
-export interface CheckoutSessionPayload {
-  /** Token format version. */
-  v: 1;
+export interface CheckoutSessionAmount {
+  /** The main `checkout_id` or one of `bump_checkout_ids` (canonical 36-char UUID). */
+  checkout_id: string;
+  /** Integer cents, 1 to 1_000_000_000 (R$ 10.000.000,00). */
+  amount_cents: number;
+}
+
+/** Fields shared by every session version. */
+interface CheckoutSessionPayloadBase {
   /** Main Checkout being sold. */
   checkout_id: string;
   /** Extras OFFERED on the page (order bump); the buyer picks among them. */
@@ -349,6 +354,33 @@ export interface CheckoutSessionPayload {
   /** Expiry in unix SECONDS (not milliseconds). Keep it short, e.g. now + 30 min. */
   exp: number;
 }
+
+/** v1: every item is charged the Checkout's own price. */
+export interface CheckoutSessionPayloadV1 extends CheckoutSessionPayloadBase {
+  /** Token format version. */
+  v: 1;
+  /** A v1 carries no prices; a non-empty list here throws (use `v: 2`). */
+  amounts?: readonly [] | null;
+}
+
+/**
+ * v2: the session also fixes the price of the listed items (e.g. an affiliate
+ * price). Only items with their own price need an entry. An empty or absent
+ * `amounts` is signed as a v1, byte for byte.
+ */
+export interface CheckoutSessionPayloadV2 extends CheckoutSessionPayloadBase {
+  /** Token format version. */
+  v: 2;
+  /** 1 to 11 entries; each id is the main checkout or an offered extra, no repeats. */
+  amounts?: readonly CheckoutSessionAmount[] | null;
+}
+
+/**
+ * What the project signs for PayGuin (wire names, snake_case, on purpose: this
+ * is exactly the JSON that gets signed). PayGuin trusts `reference`, the
+ * offered extras and the `amounts` ONLY from here, never from the browser.
+ */
+export type CheckoutSessionPayload = CheckoutSessionPayloadV1 | CheckoutSessionPayloadV2;
 
 // ---------------------------------------------------------------------------
 // Webhook verification result
