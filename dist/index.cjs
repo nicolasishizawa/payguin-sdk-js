@@ -30,9 +30,13 @@ __export(index_exports, {
   PayGuinApiError: () => PayGuinApiError,
   PayGuinClient: () => PayGuinClient,
   PayGuinEventType: () => PayGuinEventType,
+  USDT_MIN_AMOUNT: () => USDT_MIN_AMOUNT,
+  USDT_NETWORK: () => USDT_NETWORK,
   createCheckoutSession: () => createCheckoutSession,
   handleWebhook: () => handleWebhook,
+  isValidUsdtAmount: () => isValidUsdtAmount,
   parseWebhookEvent: () => parseWebhookEvent,
+  usdtToCents: () => usdtToCents,
   verifyWebhookSignature: () => verifyWebhookSignature
 });
 module.exports = __toCommonJS(index_exports);
@@ -53,6 +57,22 @@ var PayGuinApiError = class extends Error {
   responseBody;
   kind = "PayGuinApiError";
 };
+
+// src/usdt.ts
+var USDT_MIN_AMOUNT = 10;
+var USDT_NETWORK = "trx";
+var USDT_MAX_AMOUNT = 1e7;
+function isValidUsdtAmount(amountUsdt) {
+  return typeof amountUsdt === "number" && Number.isSafeInteger(amountUsdt) && amountUsdt >= USDT_MIN_AMOUNT && amountUsdt <= USDT_MAX_AMOUNT;
+}
+function usdtToCents(amountUsdt) {
+  if (!isValidUsdtAmount(amountUsdt)) {
+    throw new TypeError(
+      `USDT amount must be a whole number from ${USDT_MIN_AMOUNT} to ${USDT_MAX_AMOUNT} (got ${String(amountUsdt)}); PayGuin charges whole USDT only`
+    );
+  }
+  return amountUsdt * 100;
+}
 
 // src/client.ts
 var DEFAULT_TIMEOUT_MS = 3e4;
@@ -132,6 +152,76 @@ var PayGuinClient = class {
     };
   }
   /**
+   * Creates a USDT charge (TRX network) on a USDT Checkout.
+   *
+   * Same route as `createCharge` (POST /api/v1/checkouts/{checkoutId}/orders),
+   * but no payer data is sent: the body is `{"payer": {}}` plus the optional
+   * session, extras, reference and metadata. The price comes from the Checkout,
+   * or from a v2 session (`amounts`, built with `usdtToCents`). PayGuin answers
+   * with an address unique to this charge, valid for about 48h.
+   *
+   * Amounts are whole USDT, at least 10 (`USDT_MIN_AMOUNT`). PayGuin refuses
+   * anything else with 422 `invalid_amount`; 422 `unsupported` means the
+   * organization's provider has no crypto; 502 `provider_amount_mismatch`
+   * means the provider registered another value and the charge was dropped.
+   *
+   * @throws {PayGuinApiError} On non-2xx HTTP responses.
+   * @throws {Error} When the Checkout is not a USDT one, or the answer lacks
+   *                 the crypto fields (a server without crypto support).
+   * @throws {Error} On network failures or timeouts.
+   */
+  async createCryptoCharge(checkoutId, input = {}) {
+    if (!checkoutId) {
+      throw new TypeError("checkoutId must not be empty");
+    }
+    const payload = { payer: {} };
+    if (input.reference !== void 0) {
+      payload.reference = input.reference;
+    }
+    if (input.metadata !== void 0) {
+      payload.metadata = input.metadata;
+    }
+    if (input.session !== void 0) {
+      payload.session = input.session;
+    }
+    if (input.bumpCheckoutIds !== void 0) {
+      payload.bump_checkout_ids = input.bumpCheckoutIds;
+    }
+    const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/orders`;
+    const response = await this.doFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      await this.throwApiError("createCryptoCharge", response);
+    }
+    const data = await response.json();
+    if (data.payment_method !== "crypto") {
+      throw new Error(
+        `[PayGuinClient] createCryptoCharge: checkout ${checkoutId} is not a USDT checkout (PayGuin created order ${data.order_id} as ${data.payment_method ?? "pix"})`
+      );
+    }
+    if (!data.crypto_address || data.crypto_network !== USDT_NETWORK || !isValidUsdtAmount(data.crypto_amount) || !data.crypto_expires_at) {
+      throw new Error(
+        `[PayGuinClient] createCryptoCharge: incomplete crypto answer for order ${data.order_id}`
+      );
+    }
+    return {
+      orderId: data.order_id,
+      externalId: data.external_id,
+      reference: data.reference || null,
+      status: data.status,
+      address: data.crypto_address,
+      network: data.crypto_network,
+      amountUsdt: data.crypto_amount,
+      amountCents: data.amount_cents,
+      currency: "USDT",
+      expiresAt: data.crypto_expires_at,
+      items: toOrderItems(data.items)
+    };
+  }
+  /**
    * Queries the status of an existing order.
    *
    * Calls GET /api/v1/orders/{orderId}/status.
@@ -154,12 +244,20 @@ var PayGuinClient = class {
       await this.throwApiError("getOrderStatus", response);
     }
     const data = await response.json();
+    const isCrypto = data.payment_method === "crypto";
     return {
       status: data.status,
       amountCents: data.amount_cents,
       currency: data.currency,
       expiresAt: data.expires_at ?? null,
-      reference: data.reference || null
+      reference: data.reference || null,
+      // Absent payment_method = PIX (PIX responses did not change).
+      paymentMethod: isCrypto ? "crypto" : "pix",
+      crypto: isCrypto ? {
+        address: data.crypto_address ?? "",
+        network: data.crypto_network ?? USDT_NETWORK,
+        amountUsdt: data.crypto_amount ?? data.amount_cents / 100
+      } : null
     };
   }
   /**
@@ -210,7 +308,7 @@ var PayGuinClient = class {
     try {
       body = await response.text();
       const parsed = JSON.parse(body);
-      errorCode = typeof parsed.code === "string" ? parsed.code : void 0;
+      errorCode = typeof parsed.error === "string" ? parsed.error : typeof parsed.code === "string" ? parsed.code : void 0;
       errorMessage = typeof parsed.message === "string" ? parsed.message : void 0;
     } catch {
     }
@@ -506,9 +604,13 @@ var PayGuinEventType = {
   PayGuinApiError,
   PayGuinClient,
   PayGuinEventType,
+  USDT_MIN_AMOUNT,
+  USDT_NETWORK,
   createCheckoutSession,
   handleWebhook,
+  isValidUsdtAmount,
   parseWebhookEvent,
+  usdtToCents,
   verifyWebhookSignature
 });
 //# sourceMappingURL=index.cjs.map

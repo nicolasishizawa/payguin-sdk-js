@@ -1,8 +1,9 @@
 /**
- * @payguin/sdk — TypeScript SDK for integrating with PayGuin PIX payment gateway.
+ * @payguin/sdk — TypeScript SDK for integrating with PayGuin (PIX and USDT).
  *
  * Covers the full PayGuin contract:
  * - Charge creation (PIX copia-e-cola), with order-bump extras via a signed session
+ * - USDT charge on the TRX network (address unique per charge, ~48h)
  * - Checkout session signing (embedded checkout; v2 carries per-item prices)
  * - Order status polling
  * - Checkout summary (current price)
@@ -21,6 +22,9 @@ export { PayGuinApiError } from "./errors.js";
 
 // Checkout session (embed)
 export { createCheckoutSession } from "./session.js";
+
+// USDT (crypto) rules
+export { usdtToCents, isValidUsdtAmount, USDT_MIN_AMOUNT, USDT_NETWORK } from "./usdt.js";
 
 // Webhook
 export {
@@ -55,6 +59,13 @@ export type {
   OrderItem,
   CheckoutSummary,
 
+  // Crypto charge (USDT on TRX)
+  PaymentMethod,
+  CryptoNetwork,
+  CreateCryptoChargeInput,
+  CryptoChargeResult,
+  CryptoOrderInfo,
+
   // Webhook payload (raw)
   PayGuinWebhookPayload,
   PayGuinOrder,
@@ -80,6 +91,7 @@ export type {
 
   // API wire types
   PayGuinCreateOrderRequest,
+  PayGuinCreateCryptoOrderRequest,
   PayGuinCreateOrderResponse,
   PayGuinOrderStatusResponse,
   PayGuinCheckoutSummaryResponse,

@@ -1,7 +1,7 @@
 {
   "name": "@payguin/sdk",
-  "version": "0.3.0",
-  "description": "TypeScript SDK for integrating with PayGuin PIX payment gateway — charge creation, order status, and webhook verification.",
+  "version": "0.4.0",
+  "description": "TypeScript SDK for integrating with PayGuin payment gateway — PIX and USDT (TRX) charges, order status, and webhook verification.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -44,6 +44,8 @@
   "keywords": [
     "payguin",
     "pix",
+    "usdt",
+    "crypto",
     "payment",
     "webhook",
     "hmac",
