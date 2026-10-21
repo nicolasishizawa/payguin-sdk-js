@@ -59,9 +59,9 @@ export interface PayGuinOrder {
   /** Your correlation id (from the checkout session or `createCharge`). Empty string when none. */
   reference: string;
   status: string; // "pending" | "paid" | "failed" | "canceled" | "expired"
-  /** Total charged: sum of `items`, computed by PayGuin. */
+  /** Total charged: sum of `items`, computed by PayGuin. In USDT cents on a USDT order. */
   amount_cents: number;
-  currency: string; // "BRL"
+  currency: string; // "BRL" | "USDT"
   paid_at: string | null;
   created_at: string; // ISO 8601
   /**
@@ -69,6 +69,15 @@ export interface PayGuinOrder {
    * than the order-bump release; treat absent as "only `checkout`".
    */
   items?: PayGuinOrderItem[];
+  /**
+   * `"crypto"` on a USDT order. Absent on a PIX order (the PIX payload did not
+   * change): treat absent as `"pix"`.
+   */
+  payment_method?: PaymentMethod;
+  /** Crypto only: the TRX address of this order. */
+  crypto_address?: string;
+  /** Crypto only: always `"trx"`. */
+  crypto_network?: CryptoNetwork;
 }
 
 export interface PayGuinCheckout {
@@ -77,6 +86,7 @@ export interface PayGuinCheckout {
   name: string;
 }
 
+/** On a crypto order without a session every field may be an empty string. */
 export interface PayGuinPayer {
   name: string;
   email: string;
@@ -201,6 +211,15 @@ export interface PayGuinCreateOrderRequest {
   bump_checkout_ids?: string[];
 }
 
+/**
+ * Request body of a USDT charge (same route, on a USDT Checkout). No payer
+ * data is sent; with a session, PayGuin takes it from the token.
+ */
+export interface PayGuinCreateCryptoOrderRequest
+  extends Omit<PayGuinCreateOrderRequest, "payer"> {
+  payer: Record<string, never>;
+}
+
 /** Response from PayGuin: POST /api/v1/checkouts/{checkoutId}/orders */
 export interface PayGuinCreateOrderResponse {
   order_id: string;
@@ -210,10 +229,22 @@ export interface PayGuinCreateOrderResponse {
   status: string;
   amount_cents: number;
   currency: string;
+  /** `""` on a crypto charge. */
   pix_copia_e_cola: string;
+  /** Absent on a crypto charge (see `crypto_expires_at`). */
   pix_expires_at: string | null;
   /** Every line charged, main Checkout included. Absent on servers before order bump. */
   items?: PayGuinOrderItem[];
+  /** `"crypto"` on a USDT charge; absent on PIX. */
+  payment_method?: PaymentMethod;
+  /** Crypto only: TRX address unique to this charge. */
+  crypto_address?: string;
+  /** Crypto only: `"trx"`. */
+  crypto_network?: CryptoNetwork;
+  /** Crypto only: whole USDT (= amount_cents / 100). */
+  crypto_amount?: number;
+  /** Crypto only: ISO 8601, about 48h after creation. */
+  crypto_expires_at?: string;
 }
 
 /** Response from PayGuin: GET /api/v1/orders/{orderId}/status */
@@ -221,9 +252,16 @@ export interface PayGuinOrderStatusResponse {
   status: OrderStatus["status"];
   amount_cents: number;
   currency: string;
+  /** On a crypto order this is the address expiry (`crypto_expires_at`). */
   expires_at?: string | null;
   /** Not personal data: lets the project check whose order this is. */
   reference?: string;
+  /** `"crypto"` on a USDT order; absent on PIX. */
+  payment_method?: PaymentMethod;
+  crypto_address?: string;
+  crypto_network?: CryptoNetwork;
+  /** Whole USDT. */
+  crypto_amount?: number;
 }
 
 /** Response from PayGuin: GET /api/v1/checkouts/{checkoutId}/summary */
@@ -262,12 +300,31 @@ export interface ChargeResult {
 }
 
 export interface OrderStatus {
+  /**
+   * On a crypto order `"expired"` is NOT final: the address keeps receiving and
+   * a late payment moves it to `"paid"`. On PIX `"expired"` is terminal.
+   */
   status: "pending" | "paid" | "canceled" | "failed" | "expired";
+  /** In USDT cents on a crypto order. */
   amountCents: number;
   currency: string;
+  /** PIX code expiry, or the address expiry on a crypto order. */
   expiresAt: string | null;
   /** Reference stored on the order; null when none. */
   reference: string | null;
+  /** `"pix"` or `"crypto"` (servers without crypto always report PIX). */
+  paymentMethod: PaymentMethod;
+  /** Address, network and amount of a crypto order; null on PIX. */
+  crypto: CryptoOrderInfo | null;
+}
+
+/** The crypto side of an order (USDT on TRX). */
+export interface CryptoOrderInfo {
+  /** TRX address unique to this order. */
+  address: string;
+  network: CryptoNetwork;
+  /** Whole USDT. */
+  amountUsdt: number;
 }
 
 /** Public summary of a Checkout — current price and whether it can be sold. */
@@ -277,6 +334,53 @@ export interface CheckoutSummary {
   amountCents: number;
   currency: string;
   isActive: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Crypto (USDT on TRX)
+// ---------------------------------------------------------------------------
+
+/** How an order is paid. The Checkout currency decides it: BRL = PIX, USDT = crypto. */
+export type PaymentMethod = "pix" | "crypto";
+
+/** Network of a crypto charge. PayGuin only uses TRX (TRON, USDT TRC-20). */
+export type CryptoNetwork = "trx";
+
+export interface CreateCryptoChargeInput {
+  /**
+   * Caller-defined reference for correlation, echoed back as `order.reference`.
+   * With a `session`, the reference inside the signed token is the one that counts.
+   */
+  reference?: string;
+  /** Free-form metadata, merged on top of the Checkout's own and echoed back in the webhook. */
+  metadata?: Record<string, unknown>;
+  /**
+   * Signed checkout session (see `createCheckoutSession`). A v2 session can fix
+   * the USDT price of each item: fill `amounts` with `usdtToCents(...)`.
+   */
+  session?: string;
+  /** Extras the buyer chose (USDT Checkouts), a subset of the session's `bump_checkout_ids`. */
+  bumpCheckoutIds?: string[];
+}
+
+export interface CryptoChargeResult {
+  orderId: string;
+  externalId: string;
+  /** Reference stored on the order (from the session when one was sent); null when none. */
+  reference: string | null;
+  status: string;
+  /** TRX address unique to this charge. Show it (and a QR of it) to the buyer. */
+  address: string;
+  network: CryptoNetwork;
+  /** Whole USDT the buyer must send: Checkout + chosen extras, computed by PayGuin. */
+  amountUsdt: number;
+  /** Same total in USDT cents (`amountUsdt * 100`), as in `order.amount_cents`. */
+  amountCents: number;
+  currency: "USDT";
+  /** ISO 8601, about 48h after creation. A payment after it still counts (see README). */
+  expiresAt: string;
+  /** Lines charged, main Checkout included. `amountCents` in USDT cents. */
+  items: OrderItem[];
 }
 
 // ---------------------------------------------------------------------------

@@ -129,6 +129,8 @@ describe("getOrderStatus", () => {
       currency: "BRL",
       expiresAt: "2026-09-11T20:00:00Z",
       reference: "purchase-42",
+      paymentMethod: "pix",
+      crypto: null,
     });
   });
 

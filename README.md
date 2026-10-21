@@ -1,6 +1,6 @@
 # @payguin/sdk
 
-The friendly way to take PIX payments through **PayGuin** from any TypeScript backend.
+The friendly way to take PIX payments — and USDT on the TRX network — through **PayGuin** from any TypeScript backend.
 
 PayGuin creates the charge, watches the money land, and pings you with a signed webhook the moment it does. This SDK is the small, honest layer in the middle: it creates charges, checks order status, and — the part you really don't want to hand-roll — verifies those webhook signatures correctly. Everything else about your product stays yours.
 
@@ -18,12 +18,34 @@ It's a git dependency, pinned to a tag — no registry, no surprises:
 // package.json
 {
   "dependencies": {
-    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.3.0"
+    "@payguin/sdk": "github:nicolasishizawa/payguin-sdk-js#v0.4.0"
   }
 }
 ```
 
-Then `bun install` (or `npm install`). Bump the `#v0.3.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
+Then `bun install` (or `npm install`). Bump the `#v0.4.0` when you want a newer version — you upgrade on purpose, never by accident. Working on the SDK and the app side by side? Point at your local checkout instead: `"@payguin/sdk": "file:../payguin-sdk-js"`.
+
+---
+
+## Configure
+
+Whoever runs your PayGuin instance hands you three things. Keep them in your backend config, never in the browser:
+
+```bash
+PAYGUIN_BASE_URL=https://pay.example.com      # the instance's public address
+PAYGUIN_CHECKOUT_ID=<uuid>                    # one per thing you sell (a BRL one for PIX, a USDT one for crypto)
+PAYGUIN_WEBHOOK_SECRET=<project signing secret> # verifies webhooks and signs checkout sessions
+```
+
+```ts
+const payguin = new PayGuinClient({
+  baseUrl: process.env.PAYGUIN_BASE_URL!, // required
+  timeoutMs: 30_000,                      // optional, default 30s
+  fetch: myFetch,                         // optional, injectable for tests
+});
+```
+
+The Checkout currency decides how it is paid: a **BRL** Checkout is PIX (`createCharge`), a **USDT** Checkout is crypto (`createCryptoCharge`).
 
 ---
 
@@ -69,21 +91,13 @@ That's it. The SDK gets you to a trustworthy "this was paid." What happens next 
 
 ## Where the SDK stops (on purpose)
 
-PayGuin is a **one-shot PIX rail**. It charges, it confirms, it notifies. It does *not* know about subscriptions, renewals, trials, or who's allowed in.
+PayGuin is a **one-shot payment rail** (PIX or USDT). It charges, it confirms, it notifies. It does *not* know about subscriptions, renewals, trials, or who's allowed in.
 
-So when `payment.paid` arrives, **your app owns what happens next**. Monthly plan? You track "paid until when" and charge again next cycle. One-time purchase? You unlock it and you're done. Keeping that logic on your side is deliberate — it's the part that's unique to your product, and PIX has no auto-debit to lean on anyway.
+So when `payment.paid` arrives, **your app owns what happens next**. Monthly plan? You track "paid until when" and charge again next cycle. One-time purchase? You unlock it and you're done. Keeping that logic on your side is deliberate — it's the part that's unique to your product, and neither PIX nor a USDT transfer has auto-debit to lean on anyway.
 
 ---
 
-## Creating charges
-
-```ts
-const client = new PayGuinClient({
-  baseUrl: "https://payguin.example.com", // required
-  timeoutMs: 30_000,                      // optional, default 30s
-  fetch: myFetch,                         // optional, injectable for tests
-});
-```
+## Creating PIX charges
 
 ### `createCharge(checkoutId, input)`
 
@@ -111,10 +125,12 @@ Your safety net when a webhook gets lost in the ether. Poll the truth directly:
 
 ```ts
 const status = await client.getOrderStatus("order-uuid");
-// → { status: "pending" | "paid" | "canceled" | "failed" | "expired", amountCents, currency, expiresAt, reference }
+// → { status: "pending" | "paid" | "canceled" | "failed" | "expired", amountCents, currency, expiresAt, reference,
+//     paymentMethod: "pix" | "crypto",
+//     crypto: { address, network: "trx", amountUsdt } | null }   // null on PIX
 ```
 
-Got an order id from a browser? Check `reference` matches the purchase you expect before acting on it.
+Got an order id from a browser? Check `reference` matches the purchase you expect before acting on it. On a crypto order `expiresAt` is the address expiry and `crypto` lets you redraw the payment screen after a reload.
 
 ### `getCheckoutSummary(checkoutId)`
 
@@ -127,7 +143,117 @@ const summary = await client.getCheckoutSummary("checkout-uuid");
 
 ### When things go wrong: `PayGuinApiError`
 
-Any non-2xx response throws a `PayGuinApiError` carrying `httpStatus`, `errorCode`, `errorMessage`, and the raw `responseBody` — enough to actually debug, never a silent failure.
+Any non-2xx response throws a `PayGuinApiError` carrying `httpStatus`, `errorCode`, `errorMessage`, and the raw `responseBody` — enough to actually debug, never a silent failure. `errorCode` is PayGuin's code (`invalid_payer`, `invalid_session`, `invalid_amount`, ...).
+
+---
+
+## USDT on TRX (since 0.4.0)
+
+For buyers outside Brazil. A USDT Checkout gets you an address unique to each charge; the buyer sends the exact amount from any wallet and PayGuin fires the same `payment.paid` webhook as PIX. No CPF, no payer form.
+
+### Limits
+
+| | |
+|---|---|
+| Amount | Whole USDT only, at least **10** (10.5 is refused, not rounded) |
+| Network | **TRX** (TRON, USDT TRC-20). Fixed; no other network |
+| Address | One per charge, valid about **48h** (`expiresAt`) |
+| Units | `amountUsdt` is whole USDT; `amountCents` / `order.amount_cents` are USDT cents (10 USDT = `1000`) |
+
+PayGuin checks the amount before it asks the provider for an address: anything else is a 422 `invalid_amount`. The SDK checks it first too, with `usdtToCents` (below).
+
+### `createCryptoCharge(checkoutId, input?)`
+
+Same route as PIX (`POST /api/v1/checkouts/{checkoutId}/orders`), on a USDT Checkout. Nothing about the buyer is sent:
+
+```ts
+const charge = await client.createCryptoCharge(process.env.PAYGUIN_USDT_CHECKOUT_ID!, {
+  reference: "order-42",              // optional, comes back on the webhook
+  metadata: { plan: "global" },       // optional
+  session,                            // optional signed session (v2 sets the USDT price)
+  bumpCheckoutIds: ["extra-uuid"],    // optional, USDT extras offered by the session
+});
+// → { orderId, externalId, reference, status: "pending",
+//     address: "T...", network: "trx", amountUsdt: 10, amountCents: 1000, currency: "USDT",
+//     expiresAt: "2026-10-22T21:45:05.688Z", items: [{ checkoutId, name, amountCents }] }
+```
+
+The price is the Checkout's, or the one your signed session fixes. Compare `amountUsdt` with what you quoted before showing the address.
+
+Errors beyond the PIX ones: 422 `invalid_amount` (not a whole USDT >= 10), 422 `unsupported` (the instance's provider has no crypto), 502 `provider_amount_mismatch` (the provider registered another amount; the charge was dropped, try again). Calling it on a BRL Checkout fails with 400 `invalid_payer`.
+
+### Showing the address on your own site
+
+Your backend creates the charge and hands the browser only what it needs. The QR is just the address; draw it with any QR library on your side (the SDK ships none).
+
+```ts
+// backend (Hono)
+app.post("/pay/usdt", async (c) => {
+  const purchase = await createPurchase(c);   // your own record
+  const charge = await payguin.createCryptoCharge(process.env.PAYGUIN_USDT_CHECKOUT_ID!, {
+    reference: purchase.id,
+  });
+  await savePurchaseOrder(purchase.id, charge.orderId);
+  return c.json({
+    orderId: charge.orderId,
+    address: charge.address,
+    amountUsdt: charge.amountUsdt,
+    expiresAt: charge.expiresAt,
+  });
+});
+
+app.get("/pay/usdt/:orderId", async (c) => {
+  const s = await payguin.getOrderStatus(c.req.param("orderId"));
+  return c.json({ status: s.status });
+});
+```
+
+```ts
+// browser
+import QRCode from "qrcode"; // any QR lib works
+
+const pay = await (await fetch("/pay/usdt", { method: "POST" })).json();
+document.querySelector("#amount")!.textContent = `${pay.amountUsdt} USDT`;
+document.querySelector("#network")!.textContent = "TRON (TRC-20)";
+document.querySelector("#address")!.textContent = pay.address;
+await QRCode.toCanvas(document.querySelector("#qr") as HTMLCanvasElement, pay.address);
+document.querySelector("#copy")!.addEventListener("click", () => navigator.clipboard.writeText(pay.address));
+
+// Poll your backend; the webhook is still what grants access.
+const timer = setInterval(async () => {
+  const { status } = await (await fetch(`/pay/usdt/${pay.orderId}`)).json();
+  if (status === "paid") { clearInterval(timer); showThanks(); }
+}, 5000);
+```
+
+Tell the buyer to send **exactly** `amountUsdt` on **TRON**: another network or token is lost, and PayGuin is not told how much arrived (see the webhook note below). Keep polling after `expiresAt` if you like: on crypto, `expired` is not the end.
+
+### USDT prices in a session (v2)
+
+A v2 session prices USDT items in USDT cents. Use `usdtToCents` so a bad price fails in your code, not on the page:
+
+```ts
+import { createCheckoutSession, usdtToCents } from "@payguin/sdk";
+
+const session = createCheckoutSession(
+  {
+    v: 2,
+    checkout_id: usdtCheckoutId,
+    bump_checkout_ids: [],
+    amounts: [{ checkout_id: usdtCheckoutId, amount_cents: usdtToCents(25) }], // 25 USDT → 2500
+    reference: purchase.id,
+    payer: { name: user.name, email: user.email },
+    exp: Math.floor(Date.now() / 1000) + 30 * 60,
+  },
+  process.env.PAYGUIN_WEBHOOK_SECRET!,
+);
+```
+
+`usdtToCents(n)` throws a `TypeError` unless `n` is an integer from 10 up (`isValidUsdtAmount(n)` is the non-throwing check; `USDT_MIN_AMOUNT` and `USDT_NETWORK` are exported too). Extras must be USDT Checkouts as well: PayGuin never mixes currencies in one order.
+
+### Hosted page or embed
+
+No code of your own for the payment screen? Point the buyer at the hosted page, `https://<instance>/checkout/<usdt-checkout-id>`, or open the embed with a session exactly as for PIX (`PayGuin.open({ embedUrl: "https://<instance>/embed/checkout/<id>", session, onEvent })`). On a USDT Checkout both show the amount, the TRX network, the address with a copy button and its QR, the time left, and poll the status — no payer form. Your backend still learns about the payment through the webhook.
 
 ---
 
@@ -264,7 +390,7 @@ Every event is a member of a discriminated union keyed on `event`, so TypeScript
 | `order.created` | A charge was created (still pending) |
 | `payment.paid` | The money landed — this is the one that grants access |
 | `payment.failed` | The payment failed |
-| `payment.expired` | The PIX code expired unpaid |
+| `payment.expired` | The PIX code (or the USDT address) expired unpaid |
 | `payment.canceled` | The payment was canceled |
 | `refund.created` / `refund.completed` | A refund was opened / settled |
 | `payout.*` | Payout (cash-out) lifecycle events |
@@ -272,6 +398,16 @@ Every event is a member of a discriminated union keyed on `event`, so TypeScript
 Each one carries `order`, `checkout`, `payer`, `metadata`, `timestamp`, and `idempotencyKey`. Heads up: PayGuin normalizes a provider `refunded` status into `payment.failed` / `payment.canceled`.
 
 `order.reference` is your correlation id (the session's `reference`, or `""` when none). `order.items` lists every paid line — the main checkout plus any order-bump extras — as `{ checkout_id, name, amount_cents }`, and `order.amount_cents` is their sum. Grant access **per item**, keyed on `checkout_id`. Servers older than order bump don't send `items`; treat that as "only `checkout`".
+
+### Crypto orders in the webhook
+
+A USDT order carries `order.payment_method: "crypto"`, `order.crypto_address` and `order.crypto_network: "trx"`, with `order.currency: "USDT"` and `order.amount_cents` in USDT cents. PIX orders don't have these fields (their payload did not change): absent means PIX. Without a session the `payer` fields of a crypto order are empty strings.
+
+> **On crypto, `payment.paid` can arrive AFTER `payment.expired`.** The address keeps receiving after `expiresAt`: if the buyer pays late, PayGuin moves the order from `expired` to `paid` and sends `payment.paid` as usual. So never treat `payment.expired` as final on a crypto order — don't delete the purchase, and grant access when the late `payment.paid` comes (or refund it your way). On PIX, `expired` is still terminal.
+
+The provider does not report how much USDT arrived, only that the charge was paid. PayGuin trusts that; the amount actually received can only be checked in the provider panel by whoever runs the instance.
+
+`handleWebhook` works the same for both methods; nothing changes in how you verify or deduplicate.
 
 ---
 

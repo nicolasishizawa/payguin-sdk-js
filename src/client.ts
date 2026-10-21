@@ -1,17 +1,21 @@
 /**
  * PayGuinClient - server-to-server client for the PayGuin checkout API.
  *
- * Creates PIX charges, queries order status and reads Checkout summaries.
+ * Creates PIX and USDT (TRX) charges, queries order status and reads Checkout summaries.
  * Zero runtime dependencies: uses built-in fetch (Node 18+ / Bun) and node:crypto.
  *
  * Configuration is injected via constructor (no env var reads inside the SDK).
  */
 
 import { PayGuinApiError } from "./errors.js";
+import { USDT_NETWORK, isValidUsdtAmount } from "./usdt.js";
 import type {
   PayGuinClientConfig,
   CreateChargeInput,
   ChargeResult,
+  CreateCryptoChargeInput,
+  CryptoChargeResult,
+  PayGuinCreateCryptoOrderRequest,
   OrderStatus,
   OrderItem,
   CheckoutSummary,
@@ -117,6 +121,93 @@ export class PayGuinClient {
   }
 
   /**
+   * Creates a USDT charge (TRX network) on a USDT Checkout.
+   *
+   * Same route as `createCharge` (POST /api/v1/checkouts/{checkoutId}/orders),
+   * but no payer data is sent: the body is `{"payer": {}}` plus the optional
+   * session, extras, reference and metadata. The price comes from the Checkout,
+   * or from a v2 session (`amounts`, built with `usdtToCents`). PayGuin answers
+   * with an address unique to this charge, valid for about 48h.
+   *
+   * Amounts are whole USDT, at least 10 (`USDT_MIN_AMOUNT`). PayGuin refuses
+   * anything else with 422 `invalid_amount`; 422 `unsupported` means the
+   * organization's provider has no crypto; 502 `provider_amount_mismatch`
+   * means the provider registered another value and the charge was dropped.
+   *
+   * @throws {PayGuinApiError} On non-2xx HTTP responses.
+   * @throws {Error} When the Checkout is not a USDT one, or the answer lacks
+   *                 the crypto fields (a server without crypto support).
+   * @throws {Error} On network failures or timeouts.
+   */
+  async createCryptoCharge(
+    checkoutId: string,
+    input: CreateCryptoChargeInput = {},
+  ): Promise<CryptoChargeResult> {
+    if (!checkoutId) {
+      throw new TypeError("checkoutId must not be empty");
+    }
+
+    // Empty payer on purpose: a crypto charge asks nothing from the buyer.
+    const payload: PayGuinCreateCryptoOrderRequest = { payer: {} };
+    if (input.reference !== undefined) {
+      payload.reference = input.reference;
+    }
+    if (input.metadata !== undefined) {
+      payload.metadata = input.metadata;
+    }
+    if (input.session !== undefined) {
+      payload.session = input.session;
+    }
+    if (input.bumpCheckoutIds !== undefined) {
+      payload.bump_checkout_ids = input.bumpCheckoutIds;
+    }
+
+    const url = `${this.baseUrl}/api/v1/checkouts/${encodeURIComponent(checkoutId)}/orders`;
+    const response = await this.doFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      await this.throwApiError("createCryptoCharge", response);
+    }
+
+    const data = (await response.json()) as PayGuinCreateOrderResponse;
+
+    if (data.payment_method !== "crypto") {
+      throw new Error(
+        `[PayGuinClient] createCryptoCharge: checkout ${checkoutId} is not a USDT checkout ` +
+        `(PayGuin created order ${data.order_id} as ${data.payment_method ?? "pix"})`,
+      );
+    }
+    if (
+      !data.crypto_address ||
+      data.crypto_network !== USDT_NETWORK ||
+      !isValidUsdtAmount(data.crypto_amount) ||
+      !data.crypto_expires_at
+    ) {
+      throw new Error(
+        `[PayGuinClient] createCryptoCharge: incomplete crypto answer for order ${data.order_id}`,
+      );
+    }
+
+    return {
+      orderId: data.order_id,
+      externalId: data.external_id,
+      reference: data.reference || null,
+      status: data.status,
+      address: data.crypto_address,
+      network: data.crypto_network,
+      amountUsdt: data.crypto_amount,
+      amountCents: data.amount_cents,
+      currency: "USDT",
+      expiresAt: data.crypto_expires_at,
+      items: toOrderItems(data.items),
+    };
+  }
+
+  /**
    * Queries the status of an existing order.
    *
    * Calls GET /api/v1/orders/{orderId}/status.
@@ -142,6 +233,7 @@ export class PayGuinClient {
     }
 
     const data = (await response.json()) as PayGuinOrderStatusResponse;
+    const isCrypto = data.payment_method === "crypto";
 
     return {
       status: data.status,
@@ -149,6 +241,15 @@ export class PayGuinClient {
       currency: data.currency,
       expiresAt: data.expires_at ?? null,
       reference: data.reference || null,
+      // Absent payment_method = PIX (PIX responses did not change).
+      paymentMethod: isCrypto ? "crypto" : "pix",
+      crypto: isCrypto
+        ? {
+            address: data.crypto_address ?? "",
+            network: data.crypto_network ?? USDT_NETWORK,
+            amountUsdt: data.crypto_amount ?? data.amount_cents / 100,
+          }
+        : null,
     };
   }
 
@@ -211,7 +312,11 @@ export class PayGuinClient {
     try {
       body = await response.text();
       const parsed = JSON.parse(body) as Record<string, unknown>;
-      errorCode = typeof parsed.code === "string" ? parsed.code : undefined;
+      // PayGuin answers {"error": "<code>", "message": "..."}; `code` kept as fallback.
+      errorCode =
+        typeof parsed.error === "string" ? parsed.error
+        : typeof parsed.code === "string" ? parsed.code
+        : undefined;
       errorMessage = typeof parsed.message === "string" ? parsed.message : undefined;
     } catch {
       // Body is not JSON or unreadable; that's fine.

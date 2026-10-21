@@ -44,7 +44,7 @@ interface PayGuinOrder {
     /** Your correlation id (from the checkout session or `createCharge`). Empty string when none. */
     reference: string;
     status: string;
-    /** Total charged: sum of `items`, computed by PayGuin. */
+    /** Total charged: sum of `items`, computed by PayGuin. In USDT cents on a USDT order. */
     amount_cents: number;
     currency: string;
     paid_at: string | null;
@@ -54,12 +54,22 @@ interface PayGuinOrder {
      * than the order-bump release; treat absent as "only `checkout`".
      */
     items?: PayGuinOrderItem[];
+    /**
+     * `"crypto"` on a USDT order. Absent on a PIX order (the PIX payload did not
+     * change): treat absent as `"pix"`.
+     */
+    payment_method?: PaymentMethod;
+    /** Crypto only: the TRX address of this order. */
+    crypto_address?: string;
+    /** Crypto only: always `"trx"`. */
+    crypto_network?: CryptoNetwork;
 }
 interface PayGuinCheckout {
     id: string;
     slug: string;
     name: string;
 }
+/** On a crypto order without a session every field may be an empty string. */
 interface PayGuinPayer {
     name: string;
     email: string;
@@ -143,6 +153,13 @@ interface PayGuinCreateOrderRequest {
     /** Extras the buyer chose; must be a subset of the session's `bump_checkout_ids`. */
     bump_checkout_ids?: string[];
 }
+/**
+ * Request body of a USDT charge (same route, on a USDT Checkout). No payer
+ * data is sent; with a session, PayGuin takes it from the token.
+ */
+interface PayGuinCreateCryptoOrderRequest extends Omit<PayGuinCreateOrderRequest, "payer"> {
+    payer: Record<string, never>;
+}
 /** Response from PayGuin: POST /api/v1/checkouts/{checkoutId}/orders */
 interface PayGuinCreateOrderResponse {
     order_id: string;
@@ -152,19 +169,38 @@ interface PayGuinCreateOrderResponse {
     status: string;
     amount_cents: number;
     currency: string;
+    /** `""` on a crypto charge. */
     pix_copia_e_cola: string;
+    /** Absent on a crypto charge (see `crypto_expires_at`). */
     pix_expires_at: string | null;
     /** Every line charged, main Checkout included. Absent on servers before order bump. */
     items?: PayGuinOrderItem[];
+    /** `"crypto"` on a USDT charge; absent on PIX. */
+    payment_method?: PaymentMethod;
+    /** Crypto only: TRX address unique to this charge. */
+    crypto_address?: string;
+    /** Crypto only: `"trx"`. */
+    crypto_network?: CryptoNetwork;
+    /** Crypto only: whole USDT (= amount_cents / 100). */
+    crypto_amount?: number;
+    /** Crypto only: ISO 8601, about 48h after creation. */
+    crypto_expires_at?: string;
 }
 /** Response from PayGuin: GET /api/v1/orders/{orderId}/status */
 interface PayGuinOrderStatusResponse {
     status: OrderStatus["status"];
     amount_cents: number;
     currency: string;
+    /** On a crypto order this is the address expiry (`crypto_expires_at`). */
     expires_at?: string | null;
     /** Not personal data: lets the project check whose order this is. */
     reference?: string;
+    /** `"crypto"` on a USDT order; absent on PIX. */
+    payment_method?: PaymentMethod;
+    crypto_address?: string;
+    crypto_network?: CryptoNetwork;
+    /** Whole USDT. */
+    crypto_amount?: number;
 }
 /** Response from PayGuin: GET /api/v1/checkouts/{checkoutId}/summary */
 interface PayGuinCheckoutSummaryResponse {
@@ -195,12 +231,30 @@ interface ChargeResult {
     items: OrderItem[];
 }
 interface OrderStatus {
+    /**
+     * On a crypto order `"expired"` is NOT final: the address keeps receiving and
+     * a late payment moves it to `"paid"`. On PIX `"expired"` is terminal.
+     */
     status: "pending" | "paid" | "canceled" | "failed" | "expired";
+    /** In USDT cents on a crypto order. */
     amountCents: number;
     currency: string;
+    /** PIX code expiry, or the address expiry on a crypto order. */
     expiresAt: string | null;
     /** Reference stored on the order; null when none. */
     reference: string | null;
+    /** `"pix"` or `"crypto"` (servers without crypto always report PIX). */
+    paymentMethod: PaymentMethod;
+    /** Address, network and amount of a crypto order; null on PIX. */
+    crypto: CryptoOrderInfo | null;
+}
+/** The crypto side of an order (USDT on TRX). */
+interface CryptoOrderInfo {
+    /** TRX address unique to this order. */
+    address: string;
+    network: CryptoNetwork;
+    /** Whole USDT. */
+    amountUsdt: number;
 }
 /** Public summary of a Checkout — current price and whether it can be sold. */
 interface CheckoutSummary {
@@ -209,6 +263,45 @@ interface CheckoutSummary {
     amountCents: number;
     currency: string;
     isActive: boolean;
+}
+/** How an order is paid. The Checkout currency decides it: BRL = PIX, USDT = crypto. */
+type PaymentMethod = "pix" | "crypto";
+/** Network of a crypto charge. PayGuin only uses TRX (TRON, USDT TRC-20). */
+type CryptoNetwork = "trx";
+interface CreateCryptoChargeInput {
+    /**
+     * Caller-defined reference for correlation, echoed back as `order.reference`.
+     * With a `session`, the reference inside the signed token is the one that counts.
+     */
+    reference?: string;
+    /** Free-form metadata, merged on top of the Checkout's own and echoed back in the webhook. */
+    metadata?: Record<string, unknown>;
+    /**
+     * Signed checkout session (see `createCheckoutSession`). A v2 session can fix
+     * the USDT price of each item: fill `amounts` with `usdtToCents(...)`.
+     */
+    session?: string;
+    /** Extras the buyer chose (USDT Checkouts), a subset of the session's `bump_checkout_ids`. */
+    bumpCheckoutIds?: string[];
+}
+interface CryptoChargeResult {
+    orderId: string;
+    externalId: string;
+    /** Reference stored on the order (from the session when one was sent); null when none. */
+    reference: string | null;
+    status: string;
+    /** TRX address unique to this charge. Show it (and a QR of it) to the buyer. */
+    address: string;
+    network: CryptoNetwork;
+    /** Whole USDT the buyer must send: Checkout + chosen extras, computed by PayGuin. */
+    amountUsdt: number;
+    /** Same total in USDT cents (`amountUsdt * 100`), as in `order.amount_cents`. */
+    amountCents: number;
+    currency: "USDT";
+    /** ISO 8601, about 48h after creation. A payment after it still counts (see README). */
+    expiresAt: string;
+    /** Lines charged, main Checkout included. `amountCents` in USDT cents. */
+    items: OrderItem[];
 }
 interface PayerInput {
     name: string;
@@ -321,7 +414,7 @@ interface PayGuinClientConfig {
 /**
  * PayGuinClient - server-to-server client for the PayGuin checkout API.
  *
- * Creates PIX charges, queries order status and reads Checkout summaries.
+ * Creates PIX and USDT (TRX) charges, queries order status and reads Checkout summaries.
  * Zero runtime dependencies: uses built-in fetch (Node 18+ / Bun) and node:crypto.
  *
  * Configuration is injected via constructor (no env var reads inside the SDK).
@@ -347,6 +440,26 @@ declare class PayGuinClient {
      * @throws {Error} On network failures or timeouts.
      */
     createCharge(checkoutId: string, input: CreateChargeInput): Promise<ChargeResult>;
+    /**
+     * Creates a USDT charge (TRX network) on a USDT Checkout.
+     *
+     * Same route as `createCharge` (POST /api/v1/checkouts/{checkoutId}/orders),
+     * but no payer data is sent: the body is `{"payer": {}}` plus the optional
+     * session, extras, reference and metadata. The price comes from the Checkout,
+     * or from a v2 session (`amounts`, built with `usdtToCents`). PayGuin answers
+     * with an address unique to this charge, valid for about 48h.
+     *
+     * Amounts are whole USDT, at least 10 (`USDT_MIN_AMOUNT`). PayGuin refuses
+     * anything else with 422 `invalid_amount`; 422 `unsupported` means the
+     * organization's provider has no crypto; 502 `provider_amount_mismatch`
+     * means the provider registered another value and the charge was dropped.
+     *
+     * @throws {PayGuinApiError} On non-2xx HTTP responses.
+     * @throws {Error} When the Checkout is not a USDT one, or the answer lacks
+     *                 the crypto fields (a server without crypto support).
+     * @throws {Error} On network failures or timeouts.
+     */
+    createCryptoCharge(checkoutId: string, input?: CreateCryptoChargeInput): Promise<CryptoChargeResult>;
     /**
      * Queries the status of an existing order.
      *
@@ -432,6 +545,29 @@ declare class PayGuinApiError extends Error {
  *                     (programmer errors: failing loudly beats a token PayGuin rejects later).
  */
 declare function createCheckoutSession(payload: CheckoutSessionPayload, projectSigningSecret: string): string;
+
+/**
+ * USDT rules shared by the client and the project's own code.
+ *
+ * PayGuin keeps USDT in `amount_cents` like BRL (USDT cents, 2 decimals), but
+ * only accepts whole USDT, at least 10: the provider truncates decimals in
+ * silence and refuses less than 10. So 10 USDT = 1000 cents, 25 USDT = 2500.
+ */
+/** Minimum charge, in whole USDT. */
+declare const USDT_MIN_AMOUNT = 10;
+/** The only network PayGuin charges on: TRX (TRON, USDT TRC-20). */
+declare const USDT_NETWORK: "trx";
+/** True for a whole number of USDT from `USDT_MIN_AMOUNT` up. */
+declare function isValidUsdtAmount(amountUsdt: unknown): amountUsdt is number;
+/**
+ * Whole USDT → the `amount_cents` PayGuin expects (e.g. in a v2 session's
+ * `amounts`). `usdtToCents(25)` is `2500`.
+ *
+ * @throws {TypeError} Unless `amountUsdt` is an integer from 10 to 10_000_000.
+ *                     Checked here so a bad price fails in your code, not as a
+ *                     422 `invalid_amount` on the page.
+ */
+declare function usdtToCents(amountUsdt: number): number;
 
 /**
  * Idempotency store — prevents duplicate processing of webhook events.
@@ -574,4 +710,4 @@ interface HandleWebhookOptions {
  */
 declare function handleWebhook(opts: HandleWebhookOptions): Promise<WebhookHandlerResult>;
 
-export { type ChargeResult, type CheckoutSessionAmount, type CheckoutSessionPayer, type CheckoutSessionPayload, type CheckoutSessionPayloadV1, type CheckoutSessionPayloadV2, type CheckoutSummary, type CreateChargeInput, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderItem, type OrderStatus, PayGuinApiError, type PayGuinCheckout, type PayGuinCheckoutSummaryResponse, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinOrderItem, type PayGuinOrderStatusResponse, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, type VerificationResult, type WebhookHandlerResult, createCheckoutSession, handleWebhook, parseWebhookEvent, verifyWebhookSignature };
+export { type ChargeResult, type CheckoutSessionAmount, type CheckoutSessionPayer, type CheckoutSessionPayload, type CheckoutSessionPayloadV1, type CheckoutSessionPayloadV2, type CheckoutSummary, type CreateChargeInput, type CreateCryptoChargeInput, type CryptoChargeResult, type CryptoNetwork, type CryptoOrderInfo, HEADER_DELIVERY_ID, HEADER_EVENT, HEADER_IDEMPOTENCY_KEY, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, type HandleWebhookOptions, type HeaderAccessor, type IdempotencyStore, InMemoryIdempotencyStore, type OrderCreatedEvent, type OrderItem, type OrderStatus, PayGuinApiError, type PayGuinCheckout, type PayGuinCheckoutSummaryResponse, PayGuinClient, type PayGuinClientConfig, type PayGuinCreateCryptoOrderRequest, type PayGuinCreateOrderRequest, type PayGuinCreateOrderResponse, PayGuinEventType, type PayGuinOrder, type PayGuinOrderItem, type PayGuinOrderStatusResponse, type PayGuinPayer, type PayGuinWebhookEvent, type PayGuinWebhookHeaders, type PayGuinWebhookPayload, type PayerInput, type PaymentCanceledEvent, type PaymentExpiredEvent, type PaymentFailedEvent, type PaymentMethod, type PaymentPaidEvent, type PayoutCompletedEvent, type PayoutCreatedEvent, type PayoutFailedEvent, type PayoutPaidEvent, type PayoutRequestedEvent, type RefundCompletedEvent, type RefundCreatedEvent, USDT_MIN_AMOUNT, USDT_NETWORK, type VerificationResult, type WebhookHandlerResult, createCheckoutSession, handleWebhook, isValidUsdtAmount, parseWebhookEvent, usdtToCents, verifyWebhookSignature };
